@@ -12,11 +12,16 @@
  * combined observation. The model decision between the two turns disappears.
  *
  * Everything else about `edit` and `write` is inherited from the built-in
- * definitions: their schemas, prompt text, argument shims, and renderers.
- *
- * This standalone version composes only Pi's public tool definitions.
+ * definitions: their schemas, prompt text, and renderers. Where the host
+ * publishes its built-in tools (`getAllTools()`), the fused schema is that
+ * host's current schema — Oh My Pi resolves the `edit` parameter shape per
+ * session — and the mutation is delegated back to the built-in through
+ * `ctx.invokeTool()`, so the session's edit store, device dispatch, approvals,
+ * and settings all apply. Hosts without that surface run the composed
+ * definitions, as before.
  */
 
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	type BashToolOptions,
 	createEditToolDefinition,
@@ -24,11 +29,20 @@ import {
 	type EditToolDetails,
 	type EditToolOptions,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type ExtensionFactory,
 	type Theme,
 	type WriteToolOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
+import type { TSchema } from "typebox";
+import {
+	type EditVariant,
+	editDefinitionForVariant,
+	publishedTool,
+	requestedToolPath,
+	sessionEditVariant,
+} from "./base-tools.ts";
 import { resolveToolPath } from "./file-queue.ts";
 import {
 	invokeBaseRenderer,
@@ -97,6 +111,35 @@ function memoizeByCwd<T>(create: (cwd: string) => T): (cwd: string) => T {
 	};
 }
 
+/** The shape Oh My Pi binds for a re-registered built-in; the host owns it. */
+type NativeInvokeTool<TDetails> = (
+	params: Record<string, unknown>,
+	options?: { signal?: AbortSignal; onUpdate?: unknown },
+) => Promise<AgentToolResult<TDetails>>;
+
+/**
+ * Run the built-in implementation of the tool this definition replaced.
+ *
+ * Oh My Pi binds a re-registered built-in to an `invokeTool` that runs the
+ * native execute with the agent loop's own tool context, so the delegated call
+ * keeps the session's edit store, device dispatch, approval, and settings. A
+ * host without that surface runs the composed definition instead.
+ */
+function runBuiltin<TDetails>(
+	ctx: ExtensionContext,
+	params: Record<string, unknown>,
+	signal: AbortSignal | undefined,
+	onUpdate: unknown,
+	composed: () => Promise<AgentToolResult<TDetails>>,
+): Promise<AgentToolResult<TDetails>> {
+	if (!("invokeTool" in ctx)) return composed();
+	const invokeTool: unknown = ctx.invokeTool;
+	if (typeof invokeTool !== "function") return composed();
+	// The host binds and owns this callback; the guard above is its only check.
+	const delegate = invokeTool as NativeInvokeTool<TDetails>;
+	return delegate(params, { signal, onUpdate });
+}
+
 export function createActionFusionExtension(options: ActionFusionOptions = {}): ExtensionFactory {
 	const baseEdit = memoizeByCwd((cwd: string) => createEditToolDefinition(cwd, options.editOptions));
 	const baseWrite = memoizeByCwd((cwd: string) => createWriteToolDefinition(cwd, options.writeOptions));
@@ -104,31 +147,62 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 	return (pi: ExtensionAPI) => {
 		const editTemplate = baseEdit(process.cwd());
 		const writeTemplate = baseWrite(process.cwd());
+		// Read the published built-ins before registering: both registrations below
+		// replace their entries, and the host resolves `edit`'s parameter shape per
+		// session, so this is the only moment its schema may be readable.
+		const publishedEdit = publishedTool(pi, "edit");
+		const publishedWrite = publishedTool(pi, "write");
 
-		const editParameters = withOptionalProperty(
-			editTemplate.parameters,
-			"then_run",
-			createThenRunSchema(EDIT_THEN_RUN_DESCRIPTION),
-		);
+		// The host reads these properties on every request, so the session-start
+		// handler below can correct the advertised shape in place once it learns
+		// which variant the session resolved to; re-registering a tool after the
+		// session started does not take effect.
+		const advertisedEdit: { parameters: TSchema; description: string } = {
+			parameters: withOptionalProperty(
+				publishedEdit?.parameters ?? editTemplate.parameters,
+				"then_run",
+				createThenRunSchema(EDIT_THEN_RUN_DESCRIPTION),
+			),
+			description: publishedEdit?.description ?? editTemplate.description,
+		};
+		let advertisedVariant: EditVariant | undefined;
+
 		const writeParameters = withOptionalProperty(
-			writeTemplate.parameters,
+			publishedWrite?.parameters ?? writeTemplate.parameters,
 			"then_run",
 			createThenRunSchema(WRITE_THEN_RUN_DESCRIPTION),
 		);
 
-		pi.registerTool<typeof editParameters, EditToolDetails | undefined>({
+		pi.registerTool<typeof advertisedEdit.parameters, EditToolDetails | undefined>({
 			...editTemplate,
-			parameters: editParameters,
+			get parameters() {
+				return advertisedEdit.parameters;
+			},
+			get description() {
+				return advertisedEdit.description;
+			},
 			async execute(toolCallId, input, signal, onUpdate, ctx) {
 				const { then_run, ...editInput } = input as typeof input & { then_run?: ThenRunInput };
+				// Forwarded to the host untouched; its declared type follows the edit
+				// shape the host resolved for this session.
+				const params = editInput as Record<string, unknown>;
 				const result = await executeMutationThenRun({
 					toolCallId,
-					absolutePath: resolveToolPath(ctx.cwd, input.path),
+					targetPath: resolveToolPath(ctx.cwd, requestedToolPath(editInput)),
 					thenRun: then_run,
 					bashOptions: options.bashOptions,
 					signal,
 					ctx,
-					mutate: () => baseEdit(ctx.cwd).execute(toolCallId, editInput, signal, onUpdate, ctx),
+					mutate: () =>
+						runBuiltin(ctx, params, signal, onUpdate, () =>
+							baseEdit(ctx.cwd).execute(
+								toolCallId,
+								params as Parameters<typeof editTemplate.execute>[1],
+								signal,
+								onUpdate,
+								ctx,
+							),
+						),
 				});
 				if (
 					then_run &&
@@ -158,16 +232,29 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 		pi.registerTool<typeof writeParameters, undefined>({
 			...writeTemplate,
 			parameters: writeParameters,
+			description: publishedWrite?.description ?? writeTemplate.description,
 			async execute(toolCallId, input, signal, onUpdate, ctx) {
 				const { then_run, ...writeInput } = input as typeof input & { then_run?: ThenRunInput };
+				// Forwarded to the host untouched; its declared type follows the shape
+				// the host resolved for this session.
+				const params = writeInput as Record<string, unknown>;
 				const result = await executeMutationThenRun({
 					toolCallId,
-					absolutePath: resolveToolPath(ctx.cwd, input.path),
+					targetPath: resolveToolPath(ctx.cwd, requestedToolPath(writeInput)),
 					thenRun: then_run,
 					bashOptions: options.bashOptions,
 					signal,
 					ctx,
-					mutate: () => baseWrite(ctx.cwd).execute(toolCallId, writeInput, signal, onUpdate, ctx),
+					mutate: () =>
+						runBuiltin(ctx, params, signal, onUpdate, () =>
+							baseWrite(ctx.cwd).execute(
+								toolCallId,
+								params as Parameters<typeof writeTemplate.execute>[1],
+								signal,
+								onUpdate,
+								ctx,
+							),
+						),
 				});
 				if (
 					then_run &&
@@ -192,6 +279,22 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				]);
 				return renderFusedMutation(view, base, "write", view.args);
 			},
+		});
+
+		// The host publishes the session's edit variant only once action methods are
+		// callable, so the shape advertised above is corrected here — after loading
+		// and before the first model request.
+		pi.on("session_start", () => {
+			const variant = sessionEditVariant(pi);
+			if (variant === undefined || variant === advertisedVariant) return;
+			const template = editDefinitionForVariant(process.cwd(), variant, options.editOptions);
+			advertisedVariant = variant;
+			advertisedEdit.parameters = withOptionalProperty(
+				template.parameters,
+				"then_run",
+				createThenRunSchema(EDIT_THEN_RUN_DESCRIPTION),
+			);
+			advertisedEdit.description = template.description;
 		});
 	};
 }

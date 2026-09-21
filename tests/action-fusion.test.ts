@@ -45,6 +45,7 @@ function loadFusedTools(options?: ActionFusionOptions): FusedTools {
 	const registered = new Map<string, ToolDefinition>();
 	const pi = {
 		registerTool: (tool: ToolDefinition) => registered.set(tool.name, tool),
+		on: () => {},
 	} as unknown as ExtensionAPI;
 	createActionFusionExtension(options)(pi);
 	const edit = registered.get("edit");

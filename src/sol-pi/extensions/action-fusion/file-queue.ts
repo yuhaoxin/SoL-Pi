@@ -10,17 +10,40 @@ import { fileURLToPath } from "node:url";
 
 const queueTails = new Map<string, Promise<void>>();
 
+/** Any URL scheme (`xd://`, `artifact://`, `ssh://`, …), matched after `file://` is handled. */
+const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//iu;
+
 function stripToolPathPrefix(filePath: string): string {
 	return filePath.startsWith("@") ? filePath.slice(1) : filePath;
 }
 
-export function resolveToolPath(cwd: string, filePath: string): string {
-	const stripped = stripToolPathPrefix(filePath);
+/**
+ * Resolve the single filesystem target a fused mutation names, or `undefined`
+ * when the call names none.
+ *
+ * Hashline patches carry their targets inside the patch text and internal URLs
+ * address devices or hosts rather than local files, so both return `undefined`.
+ * Callers serialize on the returned path and hash-check it around the follow-up
+ * command; with `undefined` they fall back to a working-directory-wide slot and
+ * to the paths the mutation reports in its result details.
+ */
+export function resolveToolPath(cwd: string, filePath: string | undefined): string | undefined {
+	if (typeof filePath !== "string") return undefined;
+	const stripped = stripToolPathPrefix(filePath.trim()).trim();
+	if (stripped.length === 0) return undefined;
 	// Pi accepts file URLs; the queue and hash guard must use the same target.
-	const expanded = stripped.startsWith("file://") ? fileURLToPath(stripped) : stripped;
-	if (expanded === "~") return homedir();
-	if (expanded.startsWith("~/")) return resolve(homedir(), expanded.slice(2));
-	return resolve(cwd, expanded);
+	if (/^file:\/\//iu.test(stripped)) {
+		try {
+			return fileURLToPath(stripped);
+		} catch {
+			// An unparsable file URL names no target; the mutation tool reports it.
+			return undefined;
+		}
+	}
+	if (URL_SCHEME_RE.test(stripped)) return undefined;
+	if (stripped === "~") return homedir();
+	if (stripped.startsWith("~/")) return resolve(homedir(), stripped.slice(2));
+	return resolve(cwd, stripped);
 }
 
 function isMissingPathError(error: unknown): boolean {
@@ -55,7 +78,11 @@ async function canonicalQueueKey(filePath: string): Promise<string> {
  * to SoL-Pi and intentionally does not nest Pi's built-in mutation queue.
  */
 export async function withFusedFileQueue<T>(filePath: string, work: () => Promise<T>): Promise<T> {
-	const key = await canonicalQueueKey(filePath);
+	return withFusedQueue(await canonicalQueueKey(filePath), work);
+}
+
+/** Serialize fused operations on an already-canonical key. */
+export async function withFusedQueue<T>(key: string, work: () => Promise<T>): Promise<T> {
 	const previous = queueTails.get(key) ?? Promise.resolve();
 	let release!: () => void;
 	const owned = new Promise<void>((resolveOwned) => {

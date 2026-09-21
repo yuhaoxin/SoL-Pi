@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type BashToolOptions, createBashToolDefinition, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { withFusedFileQueue } from "./file-queue.ts";
+import { withFusedFileQueue, withFusedQueue } from "./file-queue.ts";
 
 export const THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
 export const THEN_RUN_FAILED = "[then_run:failed]";
@@ -68,16 +68,50 @@ export async function assertUnchangedBeforeCommand(
 }
 
 /**
+ * Absolute paths the mutation reported in its result details: `path` for a
+ * single-file result and `perFileResults[].path` for a multi-file one, which is
+ * how a hashline patch that spans files reports its targets.
+ */
+function mutatedPaths(details: unknown): string[] {
+	if (typeof details !== "object" || details === null) return [];
+	const record = details as Record<string, unknown>;
+	const paths = new Set<string>();
+	if (typeof record.path === "string" && record.path.length > 0) paths.add(record.path);
+	if (Array.isArray(record.perFileResults)) {
+		for (const entry of record.perFileResults) {
+			const entryPath =
+				typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>).path : undefined;
+			if (typeof entryPath === "string" && entryPath.length > 0) paths.add(entryPath);
+		}
+	}
+	return [...paths];
+}
+
+/**
+ * Files whose content the follow-up command must not race: what the mutation
+ * reported, or the called target when the host reported none. A call that names
+ * no file and reports none (a device write) leaves the command unchecked.
+ */
+function guardedPaths(details: unknown, targetPath: string | undefined): string[] {
+	const reported = mutatedPaths(details);
+	if (reported.length > 0) return reported;
+	return targetPath === undefined ? [] : [targetPath];
+}
+
+/**
  * Apply a file mutation and, when the model asked for one, run its follow-up
  * command before returning a single observation.
  *
- * Both steps run inside one SoL-Pi queue slot for `absolutePath`, so another
- * fused mutation of the same file cannot interleave. Pi's built-in mutation
- * tool keeps its own queue; the two queues are not nested.
+ * Both steps run inside one SoL-Pi queue slot, so another fused mutation of the
+ * same target cannot interleave. The slot is keyed by `targetPath`; a call that
+ * names no single file — a hashline patch, or a device write — takes a working
+ * directory wide slot instead, because its target list is only known once the
+ * mutation reports it. Pi's built-in mutation tool keeps its own queue; the two
+ * queues are not nested.
  */
 export async function executeMutationThenRun<TDetails>({
 	toolCallId,
-	absolutePath,
+	targetPath,
 	thenRun,
 	mutate,
 	bashOptions,
@@ -85,14 +119,14 @@ export async function executeMutationThenRun<TDetails>({
 	ctx,
 }: {
 	toolCallId: string;
-	absolutePath: string;
+	targetPath: string | undefined;
 	thenRun: ThenRunInput | undefined;
 	mutate: () => Promise<AgentToolResult<TDetails>>;
 	bashOptions: BashToolOptions | undefined;
 	signal: AbortSignal | undefined;
 	ctx: ExtensionContext;
 }): Promise<AgentToolResult<TDetails>> {
-	return withFusedFileQueue(absolutePath, async () => {
+	const fused = async (): Promise<AgentToolResult<TDetails>> => {
 		let mutationResult: AgentToolResult<TDetails>;
 		try {
 			mutationResult = await mutate();
@@ -107,7 +141,9 @@ export async function executeMutationThenRun<TDetails>({
 			return mutationResult;
 		}
 
-		await assertUnchangedBeforeCommand(absolutePath);
+		for (const path of guardedPaths(mutationResult.details, targetPath)) {
+			await assertUnchangedBeforeCommand(path);
+		}
 		const bash = createBashToolDefinition(ctx.cwd, bashOptions);
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
@@ -123,5 +159,9 @@ export async function executeMutationThenRun<TDetails>({
 			const mutationOutput = resultText(mutationResult);
 			throw new Error([mutationOutput, THEN_RUN_FAILED, errorText(error)].filter(Boolean).join("\n\n"));
 		}
-	});
+	};
+
+	return targetPath === undefined
+		? withFusedQueue(`${ctx.cwd}\u0000fused`, fused)
+		: withFusedFileQueue(targetPath, fused);
 }

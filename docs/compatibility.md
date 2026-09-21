@@ -1,6 +1,6 @@
 # Pi Compatibility
 
-SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.85.1 and remains compatible with the originally supported 0.84.2 release. The current 19 test files (140 tests), type checking, package inspection, public API checks, and offline extension startup passed on both releases. Previous checks covered the public API surface of Pi 0.81.1, the base used by the original Pi fork; they are not a current full-suite compatibility guarantee. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
+SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.85.1 and remains compatible with the originally supported 0.84.2 release. The current 22 test files (186 tests), type checking, package inspection, public API checks, and offline extension startup passed on both releases. Previous checks covered the public API surface of Pi 0.81.1, the base used by the original Pi fork; they are not a current full-suite compatibility guarantee. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
 
 SoL-Pi imports only public package exports:
 
@@ -15,9 +15,13 @@ SoL-Pi imports only public package exports:
 
 ## Action Fusion
 
-The built-in edit/write definitions capture their working directory, so SoL-Pi caches one definition per `ctx.cwd`. Its own per-file queue surrounds the built-in mutation and follow-up command. It does not nest Pi's built-in mutation queue.
+The built-in edit/write definitions capture their working directory, so SoL-Pi caches one definition per `ctx.cwd`. The fused tool keeps the built-in's metadata and replaces its execute with a delegation to that same built-in, and its own queue surrounds the delegated mutation and the follow-up command. It does not nest Pi's built-in mutation queue.
 
-Action Fusion decodes `file://` targets with Node's `fileURLToPath()` before resolving the queue and hash-check path. This keeps file URLs, including percent-encoded filenames and Pi's optional `@` prefix, aligned with the file handled by the built-in mutation tool.
+Where the host publishes its registered tools (`getAllTools()`) and binds a delegation entry point (`ctx.invokeTool()`), the fused schema is the host's own schema for that tool plus `then_run`, and the mutation runs through the host's entry point, so the session's edit store, device dispatch, approvals, and settings apply to a fused call. A host without that surface composes the same definition itself and calls it directly.
+
+The host may resolve the built-in `edit` parameter shape per session and publish it only after extension loading. SoL-Pi therefore corrects the advertised shape from the host's `read` tool, whose published description names the patch-language anchors only in that variant: its `session_start` handler rewrites the fused schema and description in place when the session's variant differs from the one it advertised. A pinned `PI_EDIT_VARIANT` decides the variant outright, and a host that publishes no description keeps the shape already advertised.
+
+Action Fusion decodes `file://` targets with Node's `fileURLToPath()` before resolving the queue and hash-check path. This keeps file URLs, including percent-encoded filenames and Pi's optional `@` prefix, aligned with the file handled by the built-in mutation tool. A call that names no single file — a patch whose targets live in the patch text, or a device write such as `xd://resolve` — takes a working-directory-wide queue slot and hash-checks every path the mutation reports in its result details (`path`, `perFileResults[].path`), skipping the check when it reports none.
 
 The queue covers only fused operations registered by this SoL-Pi instance. External processes, direct built-in-tool calls outside the replacement, and unrelated extensions are not globally locked. SoL-Pi hashes the target immediately before launching `then_run` and skips the command if it observes an intervening content change.
 
@@ -80,6 +84,31 @@ the values the host passes instead of assuming Pi's shape:
   every file mutation reached the model without `path` or `content`. The fusion
   helper now rebuilds the schema from the JSON Schema document and preserves
   `required` and `additionalProperties`.
+- Host action methods refuse calls while extensions load: `getAllTools()` throws
+  `Extension runtime not initialized. Action methods cannot be called during
+  extension loading.` until the session starts, and a `registerTool()` call
+  replaces the registry entry of the name it takes, so a replacement cannot read
+  the built-in schema it replaced. `registerTool()` also takes effect only during
+  loading — a registration from a session event leaves the earlier definition in
+  place — while the host reads a definition's `parameters` and `description` on
+  every request. The fused `edit` therefore publishes both as accessors and its
+  `session_start` handler rewrites the advertised shape in place once the
+  variant is readable. `sessionEditVariant()` reads that variant from the `read`
+  tool's published description, which omp renders from the same edit-mode
+  resolution and which no SoL-Pi mechanism replaces.
+- `PI_EDIT_VARIANT` names the edit variant outright in omp's own resolution, and
+  its edit factory reads the same variable when it constructs a definition.
+  `editDefinitionForVariant()` sets it for that synchronous construction and
+  restores the previous value before returning.
+- The definitions returned by the legacy `createEditToolDefinition()` and
+  `createWriteToolDefinition()` factories run on a synthetic session carrying
+  only `cwd`, a session file, and isolated settings. A tool re-registered
+  through them therefore reaches neither the session's edit store nor its
+  `xd://` devices, so a `write xd://resolve` call issued through such a tool
+  cannot see a pending preview action. omp binds `ctx.invokeTool()` on a tool
+  that re-registers a built-in of the same name, and that call runs the native
+  built-in with the agent loop's own tool context; SoL-Pi delegates through it
+  and keeps the composed definition for hosts without it.
 - Tool renderers are called as `renderCall(args, theme, context)` and
   `renderResult(result, options, theme, context)` on Pi, and as
   `renderCall(args, options, theme)` and `renderResult(result, options, theme,
@@ -128,6 +157,17 @@ Verified against Oh My Pi 18.2.6:
 - boundary compaction and continuation through the deferred trigger in an RPC
   session, including a second consecutive boundary;
 - omp print mode leaving a boundary alone while the run completes normally.
+
+Verified against Oh My Pi 18.2.7, on the fused `edit`:
+
+- a print-mode session whose model resolves the `replace` variant, with the
+  model offered the host's single-file replacement schema plus `then_run`, and
+  the mutation and its command running in one call;
+- a print-mode session that resolves the `hashline` variant, with the model
+  offered the host's patch-language schema plus `then_run`, and one `PUT` patch
+  and its command running in one call;
+- `write xd://resolve` finalizing a staged `ast_edit` preview inside a fused
+  session, with the edit applied to the file.
 
 ## Test doubles
 

@@ -25,7 +25,10 @@ afterEach(async () => {
 
 function loadTools(options: ActionFusionOptions = {}): Map<string, ToolDefinition> {
 	const tools = new Map<string, ToolDefinition>();
-	createActionFusionExtension(options)({ registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool) } as unknown as ExtensionAPI);
+	createActionFusionExtension(options)({
+		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
+		on: () => {},
+	} as unknown as ExtensionAPI);
 	return tools;
 }
 
