@@ -34,6 +34,26 @@ function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Whether the follow-up command failed, read from the host's own report.
+ *
+ * Hosts differ: some throw for a definite non-zero exit, while others return a
+ * completed result that carries `isError` — which they also set for a timeout —
+ * and `details.exitCode` for a failed exit. Reading both keeps a failed command
+ * from being reported as a success.
+ */
+export function commandFailed(result: unknown): boolean {
+	if (typeof result !== "object" || result === null) return false;
+	// `isError` is a host extension of the tool result type, so it is read from
+	// the record rather than the vendored type.
+	const record = result as Record<string, unknown>;
+	if (record.isError === true) return true;
+	const details = record.details;
+	if (typeof details !== "object" || details === null) return false;
+	const exitCode = (details as Record<string, unknown>).exitCode;
+	return typeof exitCode === "number" && exitCode !== 0;
+}
+
 function resultText(result: AgentToolResult<unknown>): string {
 	return result.content
 		.filter((block) => block.type === "text")
@@ -148,12 +168,12 @@ export async function executeMutationThenRun<TDetails>({
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
 			const output = resultText(bashResult);
+			const failed = commandFailed(bashResult);
+			const status = failed ? THEN_RUN_FAILED : THEN_RUN_SUCCEEDED;
 			return {
 				...mutationResult,
-				content: [
-					...mutationResult.content,
-					{ type: "text", text: output ? `${THEN_RUN_SUCCEEDED}\n${output}` : THEN_RUN_SUCCEEDED },
-				],
+				...(failed ? { isError: true } : {}),
+				content: [...mutationResult.content, { type: "text", text: output ? `${status}\n${output}` : status }],
 			};
 		} catch (error) {
 			const mutationOutput = resultText(mutationResult);

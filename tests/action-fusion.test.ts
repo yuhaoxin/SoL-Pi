@@ -12,6 +12,7 @@ import {
 	assertUnchangedBeforeCommand,
 	createActionFusionExtension,
 } from "../src/sol-pi/extensions/action-fusion/index.ts";
+import { commandFailed } from "../src/sol-pi/extensions/action-fusion/then-run.ts";
 import { withFusedFileQueue } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
 import { componentText, plainTheme } from "./helpers.ts";
 
@@ -245,6 +246,13 @@ describe("action fusion then_run", () => {
 		expect(bashCalls).toBe(0);
 		expect(text(result)).not.toContain("[then_run:");
 		expect(await readFile(filePath, "utf8")).toBe("plain\n");
+	});
+
+	it("reads a failed command from the host result a non-throwing host returns", () => {
+		expect(commandFailed({ content: [], details: { exitCode: 7 } })).toBe(true);
+		expect(commandFailed({ content: [], isError: true, details: { timedOut: true } })).toBe(true);
+		expect(commandFailed({ content: [], details: { exitCode: 0 } })).toBe(false);
+		expect(commandFailed({ content: [], details: {} })).toBe(false);
 	});
 
 	it("preserves a successful mutation when then_run fails", async () => {
