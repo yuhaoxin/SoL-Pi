@@ -14,6 +14,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { formatSavingsCount, showSolPiSavings } from "../../tui.ts";
 import {
+	boundaryTrigger,
+	compactSession,
+	deferOutsideHandler,
+	systemPromptText,
+	type BoundaryTrigger,
+} from "../../host-compat.ts";
+import {
 	DEFAULT_COMPACTION_ECONOMICS,
 	decideCompaction,
 	type CompactionDecision,
@@ -165,6 +172,8 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let activeDebt: CacheDebt | undefined;
 		let nextContinuation: PendingContinuation | undefined;
 		let compactionInFlight = false;
+		/** How this session can run a boundary compaction; see `boundaryTrigger`. */
+		let boundaryMode: BoundaryTrigger = "settle";
 
 		const releaseContinuation = (): void => {
 			const continuation = nextContinuation;
@@ -179,6 +188,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			releaseContinuation();
 			state = restoreOnlineState(context.sessionManager.getBranch());
 			restored = true;
+			boundaryMode = boundaryTrigger(context);
 			observedMessages = buildSessionContext(
 				context.sessionManager.getEntries(),
 				context.sessionManager.getLeafId(),
@@ -194,7 +204,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		const save = (): void => appendOnlineState(pi, state);
 		const contextTokens = (context: ExtensionContext): number => {
 			const visible = observedMessages.reduce((total, message) => total + estimateTokens(message), 0);
-			const estimated = visible + tokenEstimate(context.getSystemPrompt());
+			const estimated = visible + tokenEstimate(systemPromptText(context));
 			const reported = context.getContextUsage()?.tokens;
 			return validPositiveInteger(reported) ? Math.max(reported, estimated) : estimated;
 		};
@@ -257,6 +267,105 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			return { action: "continue" as const };
 		});
 
+		/**
+		 * Start the turn that continues the task on the compacted context.
+		 *
+		 * Pi starts the requested turn without returning its promise, so the
+		 * continuation is awaited explicitly to keep print/JSON mode from disposing
+		 * while it runs. A host with managed timers drains its own queue and needs
+		 * no such barrier.
+		 */
+		const continueAfterBoundaryCompaction = async (context: ExtensionContext): Promise<void> => {
+			const reminder = {
+				customType: "sol-pi-online-context-compact",
+				content: POST_COMPACTION_PLAN_REMINDER,
+				display: false,
+			};
+			if (boundaryMode === "deferred") {
+				pi.sendMessage(reminder, { triggerTurn: true });
+				return;
+			}
+
+			let resolveContinuation!: () => void;
+			const continuation: PendingContinuation = {
+				promise: new Promise<void>((resolve) => {
+					resolveContinuation = resolve;
+				}),
+				resolve: () => resolveContinuation(),
+			};
+			nextContinuation = continuation;
+			try {
+				pi.sendMessage(reminder, { triggerTurn: true });
+			} catch (error) {
+				if (nextContinuation === continuation) nextContinuation = undefined;
+				continuation.resolve();
+				throw error;
+			}
+			if (context.isIdle() && nextContinuation === continuation) {
+				nextContinuation = undefined;
+				continuation.resolve();
+				throw new Error("Online context compact continuation did not start");
+			}
+			await continuation.promise;
+		};
+
+		/** Compact a selected boundary decision. Reports whether the summary committed. */
+		const compactBoundary = async (
+			context: ExtensionContext,
+			pending: SelectedCompaction,
+		): Promise<boolean> => {
+			if (compactionInFlight) return false;
+			activeDebt = {
+				debtTokens: pending.decision.writeTokens * (pending.decision.incrementalCacheCostRatio ?? 0),
+				repaymentTokens: Math.max(0, pending.decision.archiveTokens - pending.decision.memoTokens),
+			};
+			let compacted = false;
+			let compactionError: Error | undefined;
+			try {
+				compactionInFlight = true;
+				await compactSession(context, {
+					instructions: BOUNDARY_COMPACTION_INSTRUCTIONS,
+					// The reminder below is this extension's continuation turn; a host that
+					// also resumed the interrupted turn would prompt the model twice.
+					suppressContinuation: true,
+					onComplete: (summary) => {
+						compacted = true;
+						const removed = Math.max(0, pending.decision.archiveTokens - tokenEstimate(summary));
+						if (removed > 0) {
+							showSolPiSavings(
+								context,
+								"Online Context Compact",
+								formatSavingsCount(removed, "context tokens removed"),
+							);
+						}
+					},
+					onError: (error) => {
+						compactionError = error;
+					},
+				});
+				compactionInFlight = false;
+				if (
+					compactionError &&
+					compactionError.name !== "AbortError" &&
+					compactionError.message !== "Compaction cancelled"
+				) {
+					throw compactionError;
+				}
+				return compacted;
+			} finally {
+				compactionInFlight = false;
+				activeDebt = undefined;
+			}
+		};
+
+		/** Deferred-host trigger: compact the decision selected by `turn_end`. */
+		const runDeferredBoundaryCompaction = async (context: ExtensionContext): Promise<void> => {
+			if (!selected || compactionInFlight) return;
+			const pending = selected;
+			selected = undefined;
+			if (await compactBoundary(context, pending)) await continueAfterBoundaryCompaction(context);
+		};
+
 		pi.on("turn_end", (event, context) => {
 			const boundary = pendingBoundary;
 			pendingBoundary = undefined;
@@ -275,7 +384,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 
 			const usage = context.getContextUsage();
 			const writeTokens = contextTokens(context);
-			const fixedTokens = tokenEstimate(context.getSystemPrompt());
+			const fixedTokens = tokenEstimate(systemPromptText(context));
 			const archiveTokens = Math.max(0, writeTokens - fixedTokens - keepRecentTokens);
 			const contextWindowTokens = validPositiveInteger(usage?.contextWindow)
 				? usage.contextWindow
@@ -307,13 +416,20 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 					: priced;
 			if (!decision.compact) return;
 
+			if (boundaryMode === "deferred") {
+				selected = { decision };
+				deferOutsideHandler(context, () => runDeferredBoundaryCompaction(context));
+				return;
+			}
+			if (boundaryMode === "unavailable") return;
+			// A settle host cannot compact from inside this handler: compaction aborts
+			// the run and waits for it to unwind, and the run is waiting for this
+			// handler. Stop the run here, then compact once it settles.
 			selected = { decision };
 			context.abort();
 		});
 
 		pi.on("agent_settled", async (_event, context) => {
-			// sendMessage() starts a turn without returning its promise. Capture the
-			// child settlement so print/JSON mode cannot dispose while it is running.
 			const parentContinuation = nextContinuation;
 			nextContinuation = undefined;
 			const pending = selected;
@@ -328,92 +444,13 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				return;
 			}
 
-			activeDebt = {
-				debtTokens: pending.decision.writeTokens * (pending.decision.incrementalCacheCostRatio ?? 0),
-				repaymentTokens: Math.max(0, pending.decision.archiveTokens - pending.decision.memoTokens),
-			};
-			let compacted = false;
-			let compactionError: Error | undefined;
 			try {
-				compactionInFlight = true;
-				await new Promise<void>((resolve) => {
-					let finished = false;
-					const finish = (): void => {
-						if (finished) return;
-						finished = true;
-						resolve();
-					};
-					context.compact({
-						customInstructions: BOUNDARY_COMPACTION_INSTRUCTIONS,
-						onComplete: (compaction) => {
-							try {
-								compacted = true;
-								const removed = Math.max(
-									0,
-									pending.decision.archiveTokens - tokenEstimate(compaction.summary),
-								);
-								if (removed > 0) {
-									showSolPiSavings(
-										context,
-										"Online Context Compact",
-										formatSavingsCount(removed, "context tokens removed"),
-									);
-								}
-							} finally {
-								finish();
-							}
-						},
-						onError: (error) => {
-							compactionError = error;
-							finish();
-						},
-					});
-				});
-				compactionInFlight = false;
-				if (
-					compactionError &&
-					compactionError.name !== "AbortError" &&
-					compactionError.message !== "Compaction cancelled"
-				) {
-					throw compactionError;
-				}
-
-				if (compacted) {
-					let resolveContinuation!: () => void;
-					const continuation: PendingContinuation = {
-						promise: new Promise<void>((resolve) => {
-							resolveContinuation = resolve;
-						}),
-						resolve: () => resolveContinuation(),
-					};
-					nextContinuation = continuation;
-					try {
-						pi.sendMessage(
-							{
-								customType: "sol-pi-online-context-compact",
-								content: POST_COMPACTION_PLAN_REMINDER,
-								display: false,
-							},
-							{ triggerTurn: true },
-						);
-					} catch (error) {
-						if (nextContinuation === continuation) nextContinuation = undefined;
-						continuation.resolve();
-						throw error;
-					}
-					if (context.isIdle() && nextContinuation === continuation) {
-						nextContinuation = undefined;
-						continuation.resolve();
-						throw new Error("Online context compact continuation did not start");
-					}
-					await continuation.promise;
-				}
+				if (await compactBoundary(context, pending)) await continueAfterBoundaryCompaction(context);
 			} finally {
-				compactionInFlight = false;
-				activeDebt = undefined;
 				releaseParentContinuation(parentContinuation);
 			}
 		});
+
 
 		pi.on("session_compact", (event, context) => {
 			ensureRestored(context);

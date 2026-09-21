@@ -209,6 +209,130 @@ describe("Online Context Compact extension", () => {
 		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
 		expect(restoreOnlineState(manager.entries)).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
 	});
+
+	it("compacts from the deferred timer on a host with managed timers", async () => {
+		const manager = new FakeSessionManager();
+		manager.appendMessage({ role: "user", content: `old ${"x".repeat(2_000)}`, timestamp: Date.now() });
+		manager.appendMessage(assistant(`work ${"y".repeat(2_000)}`));
+		const pi = new FakePi(manager);
+		createOnlineContextCompactExtension({ cacheWriteReadRatio: 12.5, keepRecentTokens: 1 })(pi.asExtensionApi());
+
+		const abort = vi.fn();
+		const compactCalls: Record<string, unknown>[] = [];
+		const context = fakeContext(manager, {
+			abort,
+			mode: "tui",
+			// omp commits the summary and then resolves the promise it returned.
+			compact: ((options: Record<string, unknown> = {}) => {
+				compactCalls.push(options);
+				(options.onComplete as ((result: { summary: string }) => void) | undefined)?.({ summary: "summary" });
+				return Promise.resolve();
+			}) as never,
+			isIdle: () => true,
+			ui: { notify: () => undefined, setStatus: () => undefined } as never,
+			getSystemPrompt: (() => ["system", "prompt"]) as never,
+			getContextUsage: () => ({ tokens: 195_000, contextWindow: 200_000, percent: 97.5 }),
+			// The capability probe only needs the host to expose managed timers.
+			setTimeout: (() => 0) as never,
+		} as Partial<ExtensionContext>);
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emitContext(buildSessionMessages(), context);
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-open", { steps: OPEN });
+		await runPlan(pi, context, "plan-done", { steps: DONE, progress: PROGRESS });
+		await pi.emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 1,
+				message: assistant("boundary"),
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "plan-done",
+						toolName: "update_plan",
+						content: [{ type: "text", text: "done" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			},
+			context,
+		);
+
+		// The run is not stopped: compaction is scheduled to run after this handler.
+		expect(abort).not.toHaveBeenCalled();
+		// The deferred task runs on a macrotask, so give it one.
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		expect(compactCalls).toHaveLength(1);
+		expect(compactCalls[0]).toMatchObject({
+			internalGuidance: BOUNDARY_COMPACTION_INSTRUCTIONS,
+			suppressContinuation: true,
+		});
+		expect(pi.sentMessages[0]).toEqual({
+			message: {
+				customType: "sol-pi-online-context-compact",
+				content: POST_COMPACTION_PLAN_REMINDER,
+				display: false,
+			},
+			options: { triggerTurn: true },
+		});
+	});
+});
+
+describe("Online Context Compact on a host that cannot outlive the run", () => {
+	it("leaves a boundary alone in print mode instead of stopping the run", async () => {
+		const manager = new FakeSessionManager();
+		manager.appendMessage({ role: "user", content: `old ${"x".repeat(2_000)}`, timestamp: Date.now() });
+		manager.appendMessage(assistant(`work ${"y".repeat(2_000)}`));
+		const pi = new FakePi(manager);
+		createOnlineContextCompactExtension({ cacheWriteReadRatio: 12.5, keepRecentTokens: 1 })(pi.asExtensionApi());
+
+		const abort = vi.fn();
+		const compact = vi.fn();
+		const context = fakeContext(manager, {
+			abort,
+			compact: compact as never,
+			mode: "print",
+			setTimeout: (() => 0) as never,
+			getSystemPrompt: (() => ["system", "prompt"]) as never,
+			getContextUsage: () => ({ tokens: 195_000, contextWindow: 200_000, percent: 97.5 }),
+		} as Partial<ExtensionContext>);
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emitContext(buildSessionMessages(), context);
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-open", { steps: OPEN });
+		await runPlan(pi, context, "plan-done", { steps: DONE, progress: PROGRESS });
+		await pi.emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 1,
+				message: assistant("boundary"),
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "plan-done",
+						toolName: "update_plan",
+						content: [{ type: "text", text: "done" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			},
+			context,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		// The compaction would abort the turn, and this host discards the run as
+		// soon as that happens — so nothing is started here.
+		expect(abort).not.toHaveBeenCalled();
+		expect(compact).not.toHaveBeenCalled();
+		expect(pi.sentMessages).toEqual([]);
+	});
 });
 
 function buildSessionMessages(): AgentMessage[] {
