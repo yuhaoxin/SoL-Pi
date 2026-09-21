@@ -107,6 +107,38 @@ describe("observation pack", () => {
 		expect(componentText(rendered)).toContain("Money saved");
 	});
 
+	it("reports a failed recall instead of a zero-byte chunk", () => {
+		const recall = observationPackPi().tool("obs_recall");
+		const args = { id: "obs_0123456789abcdef01234567", offset: 0 };
+		const rendered = recall.renderResult!(
+			{
+				content: [{ type: "text", text: "Unknown observation id: obs_0123456789abcdef01234567" }],
+				details: undefined,
+			},
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			{ args, cwd: process.cwd() } as never,
+		);
+
+		const text = componentText(rendered);
+		expect(text).toContain("Unknown observation id");
+		expect(text).not.toContain("0 bytes");
+		expect(text).not.toContain("Money saved");
+	});
+
+	it("reports the recalled chunk size", () => {
+		const recall = observationPackPi().tool("obs_recall");
+		const args = { id: "obs_0123456789abcdef01234567", offset: 0 };
+		const rendered = recall.renderResult!(
+			{ content: [{ type: "text", text: "chunk" }], details: { bytes: 15872, lines: 326 } },
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			{ args, cwd: process.cwd() } as never,
+		);
+
+		expect(componentText(rendered)).toContain("Recalled 15872 bytes across 326 lines");
+	});
+
 	it("keeps the first two requests full and reuses one stable placeholder afterwards", async () => {
 		const sessionDir = await sessionRoot();
 		const body = `head line\n${repeatPastThreshold("middle line\n")}tail line\n`;

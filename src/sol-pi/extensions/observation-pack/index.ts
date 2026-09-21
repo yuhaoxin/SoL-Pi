@@ -59,6 +59,16 @@ const RECALL_LIMITS = {
 
 const RECALL_SAVING = "full observation replay avoided";
 
+/** First non-empty text line of a tool result, used to report a failed recall. */
+function firstTextLine(result: { content: readonly { type: string; text?: string }[] }): string | undefined {
+	for (const block of result.content) {
+		if (block.type !== "text" || typeof block.text !== "string") continue;
+		const line = block.text.split("\n", 1)[0]?.trim();
+		if (line) return line;
+	}
+	return undefined;
+}
+
 export function createObservationPackExtension(): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
 		const sentCounts = new Map<string, number>();
@@ -139,6 +149,10 @@ export function createObservationPackExtension(): ExtensionFactory {
 				const view = resolveResultRender(themeArgument, contextArgument, {});
 				const details = result.details as { bytes?: number; lines?: number } | undefined;
 				const isPartial = (options as { isPartial?: boolean }).isPartial === true;
+				// A recall that threw returns no details; report what it said instead of
+				// claiming a zero-byte chunk was recalled.
+				const reported = details === undefined && !isPartial ? firstTextLine(result) : undefined;
+				if (reported) return renderThemedLine(view.theme, "warning", reported);
 				const base = renderThemedLine(
 					view.theme,
 					isPartial ? "warning" : "dim",
