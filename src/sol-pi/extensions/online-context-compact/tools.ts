@@ -4,10 +4,12 @@
  */
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { renderSolPiTool } from "../../tui.ts";
+import { resolveCallRender, resolveResultRender } from "../../host-compat.ts";
+import { decorateWithSolPi, renderThemedLine } from "../../tui.ts";
 import { PLAN_STATUSES, type PlanStep } from "./plan.ts";
+
+const COMPACT_CONDITION = "compacts only when projected savings are positive";
 
 export type PlanProgress = {
 	readonly files_changed: readonly string[];
@@ -74,25 +76,28 @@ export function registerOnlineTools(pi: ExtensionAPI, handlers: OnlineToolHandle
 				signal,
 				context,
 			}),
-		renderCall(params, theme) {
+		renderCall(params, second, third) {
+			const view = resolveCallRender(second, third, params);
 			const completed = params.steps.filter((step) => step.status === "completed").length;
-			return renderSolPiTool(
-				theme,
+			return decorateWithSolPi(
+				view.theme,
 				"Online Context Compact",
-				"compacts only when projected savings are positive",
-				new Text(theme.fg("dim", `Plan: ${params.steps.length} steps, ${completed} completed`), 0, 0),
+				COMPACT_CONDITION,
+				renderThemedLine(view.theme, "dim", `Plan: ${params.steps.length} steps, ${completed} completed`),
 			);
 		},
-		renderResult(result, { isPartial }, theme) {
+		renderResult(result, options, themeArgument, contextArgument) {
+			const view = resolveResultRender(themeArgument, contextArgument, {});
 			const boundary = (result.details as { boundary?: boolean } | undefined)?.boundary === true;
-			return renderSolPiTool(
-				theme,
+			const isPartial = (options as { isPartial?: boolean }).isPartial === true;
+			return decorateWithSolPi(
+				view.theme,
 				"Online Context Compact",
-				"compacts only when projected savings are positive",
-				new Text(
-					theme.fg(isPartial ? "warning" : "dim", isPartial ? "Updating plan..." : boundary ? "Progress boundary recorded" : "Plan recorded"),
-					0,
-					0,
+				COMPACT_CONDITION,
+				renderThemedLine(
+					view.theme,
+					isPartial ? "warning" : "dim",
+					isPartial ? "Updating plan..." : boundary ? "Progress boundary recorded" : "Plan recorded",
 				),
 			);
 		},

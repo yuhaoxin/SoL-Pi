@@ -25,11 +25,19 @@ import {
 	type EditToolOptions,
 	type ExtensionAPI,
 	type ExtensionFactory,
+	type Theme,
 	type WriteToolOptions,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Text, type Component } from "@earendil-works/pi-tui";
 import { resolveToolPath } from "./file-queue.ts";
-import { renderSolPiTool, showSolPiSavings } from "../../tui.ts";
+import {
+	invokeBaseRenderer,
+	resolveCallRender,
+	resolveResultRender,
+	withOptionalProperty,
+	type ToolRenderView,
+} from "../../host-compat.ts";
+import { renderSolPiTool, renderThemedLine, showSolPiSavings } from "../../tui.ts";
 import {
 	createThenRunSchema,
 	executeMutationThenRun,
@@ -49,6 +57,29 @@ export interface ActionFusionOptions {
 	readonly editOptions?: EditToolOptions;
 	/** Overrides for the underlying built-in `write` tool. */
 	readonly writeOptions?: WriteToolOptions;
+}
+
+const FUSED_SAVING = "1 model round-trip avoided";
+
+/**
+ * Render one fused mutation row.
+ *
+ * Deferring to the host's own built-in renderer keeps the row identical to an
+ * unfused edit or write, with the SoL-Pi badge added only when the call carries
+ * `then_run`. Pi ships renderers for `edit`/`write`; omp ships none, so this
+ * falls back to a title line when the base is missing rather than calling into a
+ * renderer that does not exist.
+ */
+function renderFusedMutation(
+	view: ToolRenderView,
+	base: Component | undefined,
+	name: string,
+	args: Record<string, unknown>,
+): Component {
+	const path = typeof args.path === "string" && args.path.length > 0 ? args.path : name;
+	const body = base ?? renderThemedLine(view.theme, "dim", `${name} ${path}`);
+	if (args.then_run === undefined || !view.theme) return body;
+	return renderSolPiTool(view.theme, "Action Fusion", FUSED_SAVING, body);
 }
 
 /**
@@ -74,14 +105,16 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 		const editTemplate = baseEdit(process.cwd());
 		const writeTemplate = baseWrite(process.cwd());
 
-		const editParameters = Type.Object({
-			...editTemplate.parameters.properties,
-			then_run: createThenRunSchema(EDIT_THEN_RUN_DESCRIPTION),
-		});
-		const writeParameters = Type.Object({
-			...writeTemplate.parameters.properties,
-			then_run: createThenRunSchema(WRITE_THEN_RUN_DESCRIPTION),
-		});
+		const editParameters = withOptionalProperty(
+			editTemplate.parameters,
+			"then_run",
+			createThenRunSchema(EDIT_THEN_RUN_DESCRIPTION),
+		);
+		const writeParameters = withOptionalProperty(
+			writeTemplate.parameters,
+			"then_run",
+			createThenRunSchema(WRITE_THEN_RUN_DESCRIPTION),
+		);
 
 		pi.registerTool<typeof editParameters, EditToolDetails | undefined>({
 			...editTemplate,
@@ -105,15 +138,20 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				}
 				return result;
 			},
-			renderCall: (args, theme, context) => {
-				const base = baseEdit(context.cwd).renderCall!(args, theme, context);
-				return args.then_run ? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base) : base;
+			renderCall: (args, second, third) => {
+				const view = resolveCallRender(second, third, args);
+				const base = invokeBaseRenderer(baseEdit(view.cwd), "renderCall", [args, second, third]);
+				return renderFusedMutation(view, base, "edit", view.args);
 			},
-			renderResult: (result, resultOptions, theme, context) => {
-				const base = baseEdit(context.cwd).renderResult!(result, resultOptions, theme, context);
-				return context.args.then_run
-					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
-					: base;
+			renderResult: (result, resultOptions, themeArg, contextArg) => {
+				const view = resolveResultRender(themeArg, contextArg, {});
+				const base = invokeBaseRenderer(baseEdit(view.cwd), "renderResult", [
+					result,
+					resultOptions,
+					themeArg,
+					contextArg,
+				]);
+				return renderFusedMutation(view, base, "edit", view.args);
 			},
 		});
 
@@ -139,15 +177,20 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				}
 				return result;
 			},
-			renderCall: (args, theme, context) => {
-				const base = baseWrite(context.cwd).renderCall!(args, theme, context);
-				return args.then_run ? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base) : base;
+			renderCall: (args, second, third) => {
+				const view = resolveCallRender(second, third, args);
+				const base = invokeBaseRenderer(baseWrite(view.cwd), "renderCall", [args, second, third]);
+				return renderFusedMutation(view, base, "write", view.args);
 			},
-			renderResult: (result, resultOptions, theme, context) => {
-				const base = baseWrite(context.cwd).renderResult!(result, resultOptions, theme, context);
-				return context.args.then_run
-					? renderSolPiTool(theme, "Action Fusion", "1 model round-trip avoided", base)
-					: base;
+			renderResult: (result, resultOptions, themeArg, contextArg) => {
+				const view = resolveResultRender(themeArg, contextArg, {});
+				const base = invokeBaseRenderer(baseWrite(view.cwd), "renderResult", [
+					result,
+					resultOptions,
+					themeArg,
+					contextArg,
+				]);
+				return renderFusedMutation(view, base, "write", view.args);
 			},
 		});
 	};
