@@ -45,7 +45,7 @@ describe("agent installation instructions", () => {
 			'"evidencePreservingReducerProvider": "provider-id"',
 			'"evidencePreservingReducerModel": "model-id"',
 			'"onlineContextCompact": true',
-			'"cacheWriteReadRatio": 12.5',
+			'"cacheWriteReadRatio": "auto"',
 			"scripts/check-sol-pi-config.mjs",
 			"pi list",
 			"tests/all-mechanisms.test.ts",
@@ -56,7 +56,7 @@ describe("agent installation instructions", () => {
 		expect(guide).toMatch(/do not print.+secret/is);
 	});
 
-	it("documents one configured ratio and no active-model cost inference", () => {
+	it("documents the model-derived ratio and its fixed override", () => {
 		for (const name of [
 			"README.md",
 			"agents-install.md",
@@ -65,9 +65,17 @@ describe("agent installation instructions", () => {
 		]) {
 			const text = rootFile(name);
 			expect(text, name).toContain("cacheWriteReadRatio");
-			expect(text, name).not.toContain("Model.cost");
 			expect(text, name).not.toContain("cache_read_price_per_million");
 			expect(text, name).not.toContain("cache_write_price_per_million");
 		}
+
+		for (const name of ["agents-install.md", "docs/configuration.md", "docs/compatibility.md"]) {
+			const text = rootFile(name);
+			expect(text, name).toMatch(/API list prices/u);
+			expect(text, name).toMatch(/input rate/u);
+			expect(text, name).toContain("12.5");
+			expect(text, name).not.toMatch(/does not inspect (Pi )?model price/is);
+		}
+		expect(rootFile("docs/configuration.md")).toMatch(/re-derives it on every decision/is);
 	});
 });

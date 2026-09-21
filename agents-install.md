@@ -89,13 +89,13 @@ SoL-Pi defaults every mechanism to disabled. For this managed installation, crea
   "evidencePreservingReducerProvider": "provider-id",
   "evidencePreservingReducerModel": "model-id",
   "onlineContextCompact": true,
-  "cacheWriteReadRatio": 12.5
+  "cacheWriteReadRatio": "auto"
 }
 ```
 
 `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` select the nested reducer route that Evidence-Preserving Reducer resolves through Pi's model registry. They default to the built-in reducer route and must be non-empty strings when supplied. Change them only when a different reducer model is intended.
 
-`cacheWriteReadRatio` is the only pricing-related input SoL-Pi reads. It defaults to `12.5`, accepts any finite non-negative number, and treats `0` as an explicit statement that a cache write adds no cost relative to a cache read. SoL-Pi does not inspect Pi model prices. The value controls one compaction decision and is not a bill estimate. The default follows the GPT-5.6 Sol OpenAI Standard cache-write/read ratio checked on 2026-08-21; see [OpenAI API pricing](https://developers.openai.com/api/docs/pricing). Change it when a different policy is required.
+`cacheWriteReadRatio` is the only pricing-related input SoL-Pi reads. It defaults to `"auto"`, which derives the ratio from the serving model's API list prices (Pi exposes them on `ExtensionContext.model`) and re-derives it on every compaction decision: the tokens a compaction rewrites into the cache are priced at the model's cache-write rate, or at its input rate when the rate card lists no separate write rate, because a zero write rate means "no separate write rate", not a free write. A model that exposes no cache-read price falls back to `12.5`. Supply a finite non-negative number to pin the ratio instead, and `0` to state that a cache write adds no cost relative to a cache read. The value controls one compaction decision and is not a bill estimate. The `12.5` fallback follows the GPT-5.6 Sol OpenAI Standard cache-write/read ratio checked on 2026-08-21; see [OpenAI API pricing](https://developers.openai.com/api/docs/pricing). Change the configuration when a different policy is required.
 
 Use one location matching the selected scope. Resolve the directory through Pi; the official Pi defaults are shown in parentheses:
 

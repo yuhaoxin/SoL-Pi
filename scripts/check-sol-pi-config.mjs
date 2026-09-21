@@ -12,7 +12,6 @@ const FEATURE_KEYS = [
 	"evidencePreservingReducer",
 	"onlineContextCompact",
 ];
-const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
 const DEFAULT_EPR_REDUCER_PROVIDER = ["openai", "codex"].join("-");
 const DEFAULT_EPR_REDUCER_MODEL = ["gpt-5.6", "luna"].join("-");
 const STRING_KEYS = ["evidencePreservingReducerModel", "evidencePreservingReducerProvider"];
@@ -74,15 +73,14 @@ function validateConfig(value, requireAllEnabled) {
 		effective[key] = configured ?? false;
 		if (requireAllEnabled && effective[key] !== true) fail(`${key} must be true`);
 	}
-	const cacheWriteReadRatio = Object.hasOwn(value, "cacheWriteReadRatio")
-		? value.cacheWriteReadRatio
-		: DEFAULT_CACHE_WRITE_READ_RATIO;
+	const cacheWriteReadRatio = Object.hasOwn(value, "cacheWriteReadRatio") ? value.cacheWriteReadRatio : "auto";
 	if (
-		typeof cacheWriteReadRatio !== "number" ||
-		!Number.isFinite(cacheWriteReadRatio) ||
-		cacheWriteReadRatio < 0
+		cacheWriteReadRatio !== "auto" &&
+		(typeof cacheWriteReadRatio !== "number" ||
+			!Number.isFinite(cacheWriteReadRatio) ||
+			cacheWriteReadRatio < 0)
 	) {
-		fail("cacheWriteReadRatio must be a finite non-negative number");
+		fail('cacheWriteReadRatio must be "auto" or a finite non-negative number');
 	}
 	effective.cacheWriteReadRatio = cacheWriteReadRatio;
 	effective.evidencePreservingReducerModel = stringConfigValue(

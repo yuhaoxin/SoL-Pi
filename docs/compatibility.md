@@ -49,7 +49,7 @@ Pi reports the session as idle while an extension-requested manual compaction is
 
 Online Context Compact reads `ExtensionContext.getContextUsage()` for both the context window and the provider-counted context size. When Pi reports no size — as it does between a compaction and the next answered request — the boundary falls back to its own estimate.
 
-The standalone entry passes `cacheWriteReadRatio` from `sol-pi.json` directly into Online Context Compact's economic check. It does not inspect model price metadata. Changing models during a session does not change the ratio; users who want a different decision policy update the configuration and start a new session.
+The standalone entry passes `cacheWriteReadRatio` from `sol-pi.json` into Online Context Compact's economic check. With the `"auto"` default the check reads the serving model's API list prices from `ExtensionContext.model` (`Model.cost.input`, `Model.cost.cacheRead`, and `Model.cost.cacheWrite` — the same fields Pi's own cost accounting uses) and derives the write/read price ratio per decision, so a mid-session model switch is picked up. The write side is the model's cache-write rate, or its input rate when the rate card lists no separate write rate; a zero write rate is a rate-card statement, not a free write. Pi 0.85.1 exposes those fields, so no host gate is needed. Models with a zeroed or missing cache-read price — Pi's catalog row for unknown pricing — keep the `12.5` fallback. A configured number bypasses the derivation, and changing it still requires a new session.
 
 ## Interactive TUI
 

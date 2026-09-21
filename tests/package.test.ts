@@ -30,7 +30,7 @@ describe("published package", () => {
 
 	it("ships the default cache write/read ratio in the example config", () => {
 		const config = JSON.parse(readFileSync("sol-pi.example.json", "utf8")) as Record<string, unknown>;
-		expect(config.cacheWriteReadRatio).toBe(12.5);
+		expect(config.cacheWriteReadRatio).toBe("auto");
 		expect(config.evidencePreservingReducerProvider).toBe("provider-id");
 		expect(config.evidencePreservingReducerModel).toBe("model-id");
 	});

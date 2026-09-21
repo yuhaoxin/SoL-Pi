@@ -11,8 +11,6 @@ import {
 	DEFAULT_REDUCER_PROVIDER,
 } from "./extensions/evidence-preserving-reducer/config.ts";
 
-export const DEFAULT_CACHE_WRITE_READ_RATIO = 12.5;
-
 export interface SolPiConfig {
 	readonly version: 1;
 	readonly actionFusion: boolean;
@@ -21,7 +19,8 @@ export interface SolPiConfig {
 	readonly evidencePreservingReducerModel: string;
 	readonly evidencePreservingReducerProvider: string;
 	readonly onlineContextCompact: boolean;
-	readonly cacheWriteReadRatio: number;
+	/** `"auto"` derives the ratio from the serving model's cache prices; a number fixes it. */
+	readonly cacheWriteReadRatio: number | "auto";
 }
 
 export const DEFAULT_CONFIG: SolPiConfig = Object.freeze({
@@ -32,7 +31,7 @@ export const DEFAULT_CONFIG: SolPiConfig = Object.freeze({
 	evidencePreservingReducerModel: DEFAULT_REDUCER_MODEL,
 	evidencePreservingReducerProvider: DEFAULT_REDUCER_PROVIDER,
 	onlineContextCompact: false,
-	cacheWriteReadRatio: DEFAULT_CACHE_WRITE_READ_RATIO,
+	cacheWriteReadRatio: "auto",
 });
 
 const FEATURE_KEYS = [
@@ -91,13 +90,16 @@ export function loadSolPiConfig(
 	}
 	const cacheWriteReadRatio = Object.hasOwn(record, "cacheWriteReadRatio")
 		? record.cacheWriteReadRatio
-		: DEFAULT_CACHE_WRITE_READ_RATIO;
+		: "auto";
 	if (
-		typeof cacheWriteReadRatio !== "number" ||
-		!Number.isFinite(cacheWriteReadRatio) ||
-		cacheWriteReadRatio < 0
+		cacheWriteReadRatio !== "auto" &&
+		(typeof cacheWriteReadRatio !== "number" ||
+			!Number.isFinite(cacheWriteReadRatio) ||
+			cacheWriteReadRatio < 0)
 	) {
-		throw new Error(`SoL-Pi config cacheWriteReadRatio must be a finite non-negative number: ${path}`);
+		throw new Error(
+			`SoL-Pi config cacheWriteReadRatio must be "auto" or a finite non-negative number: ${path}`,
+		);
 	}
 	const evidencePreservingReducerModel = stringConfigValue(
 		record,

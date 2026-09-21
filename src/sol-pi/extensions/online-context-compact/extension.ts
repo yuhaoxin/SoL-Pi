@@ -25,6 +25,7 @@ import {
 	decideCompaction,
 	type CompactionDecision,
 } from "./economics.ts";
+import { effectiveCacheWriteReadRatio, resolveCacheWriteReadRatioOption } from "./model-ratio.ts";
 import { analyzePlanTransition, formatPlanSnapshot, parsePlanSteps } from "./plan.ts";
 import {
 	appendOnlineState,
@@ -48,7 +49,8 @@ export const POST_COMPACTION_PLAN_REMINDER =
 	"Before continuing work, call update_plan with a fresh plan for the remaining work.";
 
 export type OnlineContextCompactOptions = {
-	readonly cacheWriteReadRatio?: number | null;
+	/** `"auto"` (the default) derives the ratio from the serving model's cache prices. */
+	readonly cacheWriteReadRatio?: number | "auto" | null;
 	readonly keepRecentTokens?: number;
 	/** Whether the host renders `promptGuidelines`; see `rendersToolPromptMetadata`. */
 	readonly toolPromptMetadata?: boolean;
@@ -65,14 +67,6 @@ export function resolveKeepRecentTokens(value: number | undefined): number {
 		throw new Error("Online Context Compact keepRecentTokens must be a positive safe integer");
 	}
 	return resolved;
-}
-
-function resolveCacheWriteReadRatio(value: number | null | undefined): number | null {
-	if (value === undefined || value === null) return null;
-	if (!Number.isFinite(value) || value < 0) {
-		throw new Error("Online Context Compact cacheWriteReadRatio must be finite and non-negative");
-	}
-	return value;
 }
 
 function tokenEstimate(text: string): number {
@@ -163,7 +157,7 @@ function validPositiveInteger(value: unknown): value is number {
 
 export function createOnlineContextCompactExtension(options: OnlineContextCompactOptions = {}): ExtensionFactory {
 	const keepRecentTokens = resolveKeepRecentTokens(options.keepRecentTokens);
-	const cacheWriteReadRatio = resolveCacheWriteReadRatio(options.cacheWriteReadRatio);
+	const cacheWriteReadRatio = resolveCacheWriteReadRatioOption(options.cacheWriteReadRatio);
 
 	return (pi) => {
 		let state: OnlineState = initialOnlineState();
@@ -409,7 +403,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				priorCompactionCount: state.nativeCompactionCount,
 				carriedDebtTokens: state.cacheDebtTokens,
 				cacheDebtRepaymentTokens: state.cacheDebtRepaymentTokens,
-				cacheWriteReadRatio,
+				cacheWriteReadRatio: effectiveCacheWriteReadRatio(cacheWriteReadRatio, context.model),
 				economics: DEFAULT_COMPACTION_ECONOMICS,
 			});
 			const decision: CompactionDecision =

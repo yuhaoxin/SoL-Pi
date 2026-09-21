@@ -23,11 +23,11 @@ The project file replaces the global file. SoL-Pi does not merge them.
   "evidencePreservingReducerProvider": "provider-id",
   "evidencePreservingReducerModel": "model-id",
   "onlineContextCompact": false,
-  "cacheWriteReadRatio": 12.5
+  "cacheWriteReadRatio": "auto"
 }
 ```
 
-Feature keys may be omitted and then default to `false`. `cacheWriteReadRatio` may be omitted and then defaults to `12.5`; when present it must be a finite non-negative number, and `0` explicitly means that a cache write adds no cost relative to a cache read. `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` may be omitted and then use the built-in reducer route; when present each must be a non-empty string. Unknown keys, unsupported versions, malformed JSON, non-boolean feature values, invalid ratios, and invalid reducer model fields stop extension loading with a direct error.
+Feature keys may be omitted and then default to `false`. `cacheWriteReadRatio` may be omitted and then defaults to `"auto"`; when present it must be `"auto"` or a finite non-negative number. `"auto"` derives the ratio from the serving model's own API list prices — the price of the tokens a compaction rewrites into the cache, over the price of reading them back — and re-derives it on every decision, so a mid-session model switch changes the ratio. The rewritten tokens are priced at the model's cache-write rate, or at its input rate when the rate card lists no separate write rate: a zero write rate is not a free write, and subscription plans that meter no per-token price still draw down quota for those tokens. A model that exposes no cache-read price — the host catalog reports unknown pricing as a zeroed cost row — keeps the `12.5` fallback, which is the most expensive ratio in common use. A number pins the ratio for the session, and `0` explicitly means that a cache write adds no cost relative to a cache read. `evidencePreservingReducerProvider` and `evidencePreservingReducerModel` may be omitted and then use the built-in reducer route; when present each must be a non-empty string. Unknown keys, unsupported versions, malformed JSON, non-boolean feature values, invalid ratios, and invalid reducer model fields stop extension loading with a direct error.
 
 For the managed all-enabled installation described in the [agent installation and configuration protocol](../agents-install.md), validate the effective file before starting Pi:
 
@@ -47,7 +47,7 @@ This preflight does not make every valid SoL-Pi configuration all-enabled. Witho
 - `evidencePreservingReducerProvider`: provider namespace used to resolve the reducer model through Pi's model registry.
 - `evidencePreservingReducerModel`: model id used for Evidence-Preserving Reducer.
 - `onlineContextCompact`: registers `update_plan` and boundary-driven native compaction after the other SoL-Pi context transformers.
-- `cacheWriteReadRatio`: supplies the single economic decision ratio used by Online Context Compact.
+- `cacheWriteReadRatio`: supplies the economic decision ratio used by Online Context Compact — `"auto"` from the serving model's cache prices, or a fixed number.
 
 ## Evidence-Preserving Reducer runtime inputs
 
@@ -60,9 +60,9 @@ The release entry supplies the run label and session-derived storage. It uses on
 The release entry uses two runtime inputs:
 
 - **Context window** — from `ExtensionContext.getContextUsage()`, used for window-pressure protection.
-- **Cache write/read ratio** — from `cacheWriteReadRatio` in the effective `sol-pi.json`. The value remains fixed for the session and is not recomputed when the model changes. It drives one runtime decision and is not a cost report.
+- **Cache write/read ratio** — resolved per decision from `cacheWriteReadRatio` in the effective `sol-pi.json` and `ExtensionContext.model`. `"auto"` uses the serving model's API list prices and follows a mid-session model switch; a configured number stays fixed. It drives one runtime decision and is not a cost report.
 
-The configured ratio stays fixed for the loaded extension. The mechanism stores its current plan, progress summaries, request horizon, context growth, and compaction debt as versioned custom entries in Pi's session log. After a successful compaction it sends one hidden, generic message with `triggerTurn: true`, which starts a new turn and instructs the assistant to rebuild its plan. A settlement barrier keeps print and JSON modes in the same Pi invocation until that continuation settles, so callers do not need to resume the session or inject `Continue working`. Cancelling or exiting does not schedule an automatic continuation. The mechanism creates no separate Online Context Compact files. The programmatic factory exposes only a matching retained-tail value for installations whose Pi compaction setting differs from the default.
+A configured numeric ratio stays fixed for the loaded extension; `"auto"` re-reads the serving model's API list prices on every decision. The mechanism stores its current plan, progress summaries, request horizon, context growth, and compaction debt as versioned custom entries in Pi's session log. After a successful compaction it sends one hidden, generic message with `triggerTurn: true`, which starts a new turn and instructs the assistant to rebuild its plan. A settlement barrier keeps print and JSON modes in the same Pi invocation until that continuation settles, so callers do not need to resume the session or inject `Continue working`. Cancelling or exiting does not schedule an automatic continuation. The mechanism creates no separate Online Context Compact files. The programmatic factory exposes only a matching retained-tail value for installations whose Pi compaction setting differs from the default.
 
 ## Pi integration
 

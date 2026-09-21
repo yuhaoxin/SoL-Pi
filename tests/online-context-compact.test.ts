@@ -342,6 +342,63 @@ describe("Online Context Compact on a host that cannot outlive the run", () => {
 		expect(compact).not.toHaveBeenCalled();
 		expect(pi.sentMessages).toEqual([]);
 	});
+
+	it("derives the economic ratio from the serving model's cache prices", async () => {
+		const runBoundary = async (cost: {
+			input: number;
+			cacheRead: number;
+			cacheWrite: number;
+		}): Promise<number> => {
+			const manager = new FakeSessionManager();
+			manager.appendMessage({ role: "user", content: `old ${"x".repeat(2_000)}`, timestamp: Date.now() });
+			manager.appendMessage(assistant(`work ${"y".repeat(2_000)}`));
+			const pi = new FakePi(manager);
+			// No configured ratio: the extension must read the serving model.
+			createOnlineContextCompactExtension({ keepRecentTokens: 1 })(pi.asExtensionApi());
+			const abort = vi.fn();
+			const context = fakeContext(manager, {
+				abort,
+				model: { id: "test-model", cost } as never,
+				// 20% of the window, so only the economic gate can select compaction.
+				getContextUsage: () => ({ tokens: 40_000, contextWindow: 200_000, percent: 20 }),
+				getSystemPrompt: () => "test prompt",
+			});
+
+			await pi.emit("session_start", { type: "session_start" }, context);
+			await pi.emitContext(buildSessionMessages(), context);
+			await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+			await runPlan(pi, context, "plan-open", { steps: OPEN });
+			await runPlan(pi, context, "plan-done", { steps: DONE, progress: PROGRESS });
+			await pi.emit(
+				"turn_end",
+				{
+					type: "turn_end",
+					turnIndex: 1,
+					message: assistant("boundary"),
+					toolResults: [
+						{
+							role: "toolResult",
+							toolCallId: "plan-done",
+							toolName: "update_plan",
+							content: [{ type: "text", text: "done" }],
+							isError: false,
+							timestamp: Date.now(),
+						},
+					],
+				},
+				context,
+			);
+			return abort.mock.calls.length;
+		};
+
+		// Writes at the read price: the rewrite costs nothing extra, so the
+		// saving pays for itself on the first following request.
+		expect(await runBoundary({ input: 1, cacheRead: 1, cacheWrite: 1 })).toBe(1);
+		// A subscription rate card that lists no write rate still bills the
+		// rewritten prompt tokens at the input price — a 50x ratio over a
+		// one-request horizon defers the same saving instead of calling it free.
+		expect(await runBoundary({ input: 0.15, cacheRead: 0.003, cacheWrite: 0 })).toBe(0);
+	});
 });
 
 function buildSessionMessages(): AgentMessage[] {

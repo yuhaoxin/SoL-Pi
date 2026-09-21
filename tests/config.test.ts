@@ -35,7 +35,7 @@ describe("SoL-Pi config", () => {
 		const { agentDir, cwd } = fixture();
 		expect(findConfigPath(cwd, agentDir, true)).toBeUndefined();
 		expect(loadSolPiConfig(cwd, agentDir, true)).toEqual(DEFAULT_CONFIG);
-		expect(DEFAULT_CONFIG.cacheWriteReadRatio).toBe(12.5);
+		expect(DEFAULT_CONFIG.cacheWriteReadRatio).toBe("auto");
 		expect(DEFAULT_CONFIG.evidencePreservingReducerProvider).toBe(DEFAULT_REDUCER_PROVIDER);
 		expect(DEFAULT_CONFIG.evidencePreservingReducerModel).toBe(DEFAULT_REDUCER_MODEL);
 	});
@@ -104,8 +104,8 @@ describe("SoL-Pi config", () => {
 		);
 	});
 
-	it("loads an explicit cache write/read ratio, including zero", () => {
-		for (const cacheWriteReadRatio of [0, 3.25]) {
+	it("loads an explicit cache write/read ratio, including zero and auto", () => {
+		for (const cacheWriteReadRatio of [0, 3.25, "auto"]) {
 			const { agentDir, cwd } = fixture();
 			const path = join(agentDir, "sol-pi.json");
 			writeFileSync(path, JSON.stringify({ version: 1, cacheWriteReadRatio }));
@@ -145,12 +145,12 @@ describe("SoL-Pi config", () => {
 		);
 	});
 
-	it.each([null, "12.5", -1])("rejects an invalid cache write/read ratio: %j", (cacheWriteReadRatio) => {
+	it.each([null, "12.5", "AUTO", -1])("rejects an invalid cache write/read ratio: %j", (cacheWriteReadRatio) => {
 		const { agentDir, cwd } = fixture();
 		const path = join(agentDir, "sol-pi.json");
 		writeFileSync(path, JSON.stringify({ version: 1, cacheWriteReadRatio }));
 		expect(() => loadSolPiConfig(cwd, agentDir, true)).toThrow(
-			"SoL-Pi config cacheWriteReadRatio must be a finite non-negative number",
+			'SoL-Pi config cacheWriteReadRatio must be "auto" or a finite non-negative number',
 		);
 	});
 
