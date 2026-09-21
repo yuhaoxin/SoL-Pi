@@ -49,6 +49,31 @@ export function renderSolPiTool(
 	return container;
 }
 
+/**
+ * Wrap a tool row body in the SoL-Pi badge, or return the body unchanged when
+ * the host renders without a theme.
+ *
+ * Tool renderers are invoked with whatever the host supplies; a host that has no
+ * theme must still get a component rather than a crash or an empty row.
+ */
+export function decorateWithSolPi(
+	theme: Theme | undefined,
+	mechanism: SolPiTuiMechanism,
+	saving: string,
+	base: Component,
+): Component {
+	return theme ? renderSolPiTool(theme, mechanism, saving, base) : base;
+}
+
+/** One styled line, falling back to plain text when the host supplies no theme. */
+export function renderThemedLine(
+	theme: Theme | undefined,
+	color: Parameters<Theme["fg"]>[0],
+	text: string,
+): Text {
+	return new Text(theme ? theme.fg(color, text) : text, 0, 0);
+}
+
 export function showSolPiSavings(
 	context: ExtensionContext,
 	mechanism: SolPiTuiMechanism,
