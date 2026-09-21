@@ -12,7 +12,7 @@ import {
 	assertUnchangedBeforeCommand,
 	createActionFusionExtension,
 } from "../src/sol-pi/extensions/action-fusion/index.ts";
-import { commandFailed } from "../src/sol-pi/extensions/action-fusion/then-run.ts";
+import { commandFailed, executeMutationThenRun } from "../src/sol-pi/extensions/action-fusion/then-run.ts";
 import { withFusedFileQueue } from "../src/sol-pi/extensions/action-fusion/file-queue.ts";
 import { componentText, plainTheme } from "./helpers.ts";
 
@@ -246,6 +246,35 @@ describe("action fusion then_run", () => {
 		expect(bashCalls).toBe(0);
 		expect(text(result)).not.toContain("[then_run:");
 		expect(await readFile(filePath, "utf8")).toBe("plain\n");
+	});
+
+	it("skips then_run when the mutation reports a failure without throwing", async () => {
+		const dir = await createTempDir();
+		let bashCalls = 0;
+		const result = await executeMutationThenRun({
+			toolCallId: "refused-1",
+			targetPath: undefined,
+			thenRun: { command: "npm test" },
+			bashOptions: {
+				operations: {
+					exec: async () => {
+						bashCalls++;
+						return { exitCode: 0 };
+					},
+				},
+			},
+			signal: undefined,
+			ctx: createContext(dir),
+			mutate: async () =>
+				({
+					content: [{ type: "text", text: "Edit refused: the text must be unique." }],
+					isError: true,
+				}) as never,
+		});
+
+		expect(bashCalls).toBe(0);
+		expect(text(result)).toContain("[then_run:skipped]");
+		expect(commandFailed(result)).toBe(true);
 	});
 
 	it("reads a failed command from the host result a non-throwing host returns", () => {

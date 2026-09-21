@@ -61,10 +61,11 @@ function resultText(result: AgentToolResult<unknown>): string {
 		.join("\n");
 }
 
+/** Appended when a mutation did not complete, so the command was left unrun. */
+const THEN_RUN_SKIPPED_NOTE = "The file mutation did not complete successfully; the command was not run.";
+
 function thenRunSkippedError(error: unknown): Error {
-	return new Error(
-		`${errorText(error)}\n\n${THEN_RUN_SKIPPED} The file mutation did not complete successfully; the command was not run.`,
-	);
+	return new Error(`${errorText(error)}\n\n${THEN_RUN_SKIPPED} ${THEN_RUN_SKIPPED_NOTE}`);
 }
 
 async function fileSha256(path: string): Promise<string> {
@@ -159,6 +160,17 @@ export async function executeMutationThenRun<TDetails>({
 
 		if (thenRun === undefined) {
 			return mutationResult;
+		}
+
+		// A mutation that reports failure without throwing — a refusal, or one entry
+		// of a multi-file patch — leaves the target unchanged or half changed, so the
+		// command would verify a state the model did not ask for. Reporting its exit
+		// status would then read as confirmation of the edit.
+		if (commandFailed(mutationResult)) {
+			return {
+				...mutationResult,
+				content: [...mutationResult.content, { type: "text", text: `${THEN_RUN_SKIPPED} ${THEN_RUN_SKIPPED_NOTE}` }],
+			};
 		}
 
 		for (const path of guardedPaths(mutationResult.details, targetPath)) {
