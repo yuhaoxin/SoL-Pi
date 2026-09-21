@@ -8,7 +8,7 @@ SoL-Pi reads one effective JSON configuration file at extension startup. It uses
 2. `<Pi agent directory>/sol-pi.json`
 3. Built-in defaults when neither file exists
 
-For the official Pi distribution, the first two locations normally resolve to `.pi/sol-pi.json` and `~/.pi/agent/sol-pi.json`.
+For the official Pi distribution, the first two locations normally resolve to `.pi/sol-pi.json` and `~/.pi/agent/sol-pi.json`. On Oh My Pi they resolve to `.omp/sol-pi.json` and `~/.omp/agent/sol-pi.json`, because the extension reads those two directories from the host.
 
 The project file replaces the global file. SoL-Pi does not merge them.
 

@@ -92,6 +92,14 @@ SoL-Pi uses a single effective configuration. With the official Pi distribution,
 
 If neither file exists, SoL-Pi uses its built-in defaults. The project-level configuration takes precedence over the user-level configuration; the two files are not merged.
 
+On Oh My Pi the same two locations resolve to `.omp/sol-pi.json` and `~/.omp/agent/sol-pi.json`, and the extension installs through omp's plugin manager:
+
+```bash
+omp plugin install github:yuhaoxin/SoL-Pi#omp-compat
+```
+
+That branch keeps the Pi contract and adapts to omp's host surfaces; see [Oh My Pi (omp)](docs/compatibility.md#oh-my-pi-omp) for what differs.
+
 The following conservative configuration enables only the two local mechanisms that make no additional model calls and do not stop an active run:
 
 ```json

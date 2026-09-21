@@ -60,6 +60,69 @@ support. The renderer therefore changes only the interactive terminal display;
 it does not change session messages, provider requests, tool results, JSON
 events, print output, or RPC UI requests.
 
+## Oh My Pi (omp)
+
+Oh My Pi loads Pi extensions through a compatibility layer that rewrites the
+`@earendil-works/*` package specifiers and the bare `typebox` import onto its own
+copies. Four host surfaces still differ, so `src/sol-pi/host-compat.ts` inspects
+the values the host passes instead of assuming Pi's shape:
+
+- `ExtensionContext.compact()` is callback-only and returns `void` on Pi. omp
+  returns a promise that settles after the summary is committed, reads the
+  summarizer guidance as `internalGuidance` instead of `customInstructions`, and
+  can suppress the resume it would otherwise run for the turn the compaction
+  interrupted. SoL-Pi sends both field names and completes on whichever signal
+  the host produces.
+- Built-in parameter schemas are TypeBox objects with a `properties` map on Pi,
+  while omp's built-ins expose callable omptype schemas whose document is
+  reachable only through `toJsonSchema()`. Spreading `parameters.properties`
+  there produced fused `edit` and `write` schemas containing only `then_run`, so
+  every file mutation reached the model without `path` or `content`. The fusion
+  helper now rebuilds the schema from the JSON Schema document and preserves
+  `required` and `additionalProperties`.
+- Tool renderers are called as `renderCall(args, theme, context)` and
+  `renderResult(result, options, theme, context)` on Pi, and as
+  `renderCall(args, options, theme)` and `renderResult(result, options, theme,
+  args)` on omp. omp's built-in definitions also carry no renderers at all, so a
+  fused tool falls back to its own title line instead of calling into a renderer
+  that does not exist.
+- `ExtensionContext.getSystemPrompt()` returns one string on Pi and the prompt's
+  lines on omp; token accounting joins the lines.
+- A session without a persistent session directory (omp `--no-session`) skips
+  archiving rather than failing the request it is handling. `obs_recall` reports
+  that nothing was stored.
+
+Online Context Compact's trigger follows what the host can do with an interrupted
+run:
+
+| Host | Trigger |
+| --- | --- |
+| Pi | stop the run at the boundary, then compact from `agent_settled` |
+| omp interactive and RPC | compact from a task scheduled after the `turn_end` handler returns, with the host's own resume suppressed and the SoL-Pi reminder starting the continuation turn |
+| omp print and JSON | no boundary compaction |
+
+omp tears a print or JSON session down as soon as an interrupted prompt settles,
+which cancels an in-flight compaction and discards the rest of the run, so a
+boundary in those modes is left alone; the host's own auto-compaction still
+protects the context window. omp's `session_stop` hook is not used for
+compaction: `compact()` aborts the settle path that hook belongs to, which
+cancels the compaction and drops the continuation the hook would request.
+
+Verified against Oh My Pi 18.2.6:
+
+- extension load and tool registration (`edit`, `write`, `obs_recall`,
+  `update_plan`) through omp's own loader, with no load errors;
+- a fused write and a fused edit each running their mutation and `then_run`
+  command in one tool call in a real print-mode session;
+- ObservationPack replacing a 64 KiB tool result with its bounded placeholder
+  after the configured number of provider requests, with objects and ledger
+  written under the session directory;
+- the evidence-preserving reducer applying a receipt (29,702 source bytes to a
+  1,911-byte receipt carrying 7 quotations) through omp's model registry;
+- boundary compaction and continuation through the deferred trigger in an RPC
+  session, including a second consecutive boundary;
+- omp print mode leaving a boundary alone while the run completes normally.
+
 ## Test doubles
 
 The test suite drives every extension through the same public `ExtensionAPI` and `ExtensionContext` surface Pi provides, over a real public `SessionManager`, without calling a remote model provider. That keeps the suite zero-spend and independent of the deleted Pi monorepo test harness. Suites that need a genuine session tree — branch order, compaction entries, custom entries, resume — use `SessionManager.inMemory()` or `SessionManager.create()` rather than reimplementing them.
