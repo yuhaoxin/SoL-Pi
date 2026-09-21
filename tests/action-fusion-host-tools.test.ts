@@ -22,8 +22,9 @@ import {
 
 /**
  * Stands in for the host's published tool listing. The two `edit` schemas are
- * the shapes Oh My Pi resolves per session; a read description carrying the
- * anchor marker is how a hashline session identifies itself.
+ * the shapes Oh My Pi resolves per session; `editSource` is `"builtin"` while
+ * the host still publishes its own entry and `"extension"` once SoL-Pi's
+ * replacement holds the name, which is when the read description has to answer.
  */
 interface PublishedToolStub {
 	readonly name: string;
@@ -39,8 +40,8 @@ const HASHLINE_EDIT_SCHEMA: Record<string, unknown> = {
 };
 const REPLACE_EDIT_SCHEMA: Record<string, unknown> = {
 	type: "object",
-	properties: { path: { type: "string" }, edits: { type: "array" } },
-	required: ["path", "edits"],
+	properties: { path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" } },
+	required: ["path"],
 };
 const WRITE_SCHEMA: Record<string, unknown> = {
 	type: "object",
@@ -51,13 +52,20 @@ const HASHLINE_READ_DESCRIPTION =
 	"Read files via `path`.\n- File + selector → `[foo.ts#1A2B]` snapshot header and numbered lines.";
 const PLAIN_READ_DESCRIPTION = "Read files via `path`.\n- Without a selector, content is returned as-is.";
 
-function publishedTools(
-	editSchema: Record<string, unknown>,
-	readDescription: string | null = PLAIN_READ_DESCRIPTION,
-): PublishedToolStub[] {
+interface ListingOptions {
+	readonly editSchema?: Record<string, unknown>;
+	readonly editSource?: string;
+	readonly readDescription?: string | null;
+}
+
+function publishedTools({
+	editSchema = REPLACE_EDIT_SCHEMA,
+	editSource = "builtin",
+	readDescription = PLAIN_READ_DESCRIPTION,
+}: ListingOptions = {}): PublishedToolStub[] {
 	const tools: PublishedToolStub[] = [
-		{ name: "edit", description: "Edit a file", parameters: editSchema, sourceInfo: { source: "builtin" } },
-		{ name: "write", description: "Write a file", parameters: WRITE_SCHEMA, sourceInfo: { source: "builtin" } },
+		{ name: "edit", description: "Edit a file", parameters: editSchema, sourceInfo: { source: editSource } },
+		{ name: "write", description: "Write a file", parameters: WRITE_SCHEMA, sourceInfo: { source: editSource } },
 	];
 	if (readDescription !== null) {
 		tools.unshift({
@@ -73,11 +81,15 @@ function publishedTools(
 type InvokeTool = (params: Record<string, unknown>) => Promise<AgentToolResult<unknown>>;
 
 interface LoadOptions {
-	readonly editSchema?: Record<string, unknown>;
-	readonly readDescription?: string | null;
+	readonly listing?: ListingOptions;
 	readonly fusion?: ActionFusionOptions;
 	readonly invokeTool?: InvokeTool;
+	/** Model the fired hooks report; `null` fires them without one. */
+	readonly model?: { readonly provider: string; readonly id: string } | null;
 }
+
+/** A model the host resolves to the `replace` variant. */
+const DOWNGRADED_MODEL = { provider: "kimi-code", id: "k3-256k" };
 
 interface Harness {
 	readonly edit: ToolDefinition;
@@ -85,17 +97,17 @@ interface Harness {
 	readonly registered: Map<string, ToolDefinition>;
 	/** Runs the `session_start` handlers the extension registered. */
 	readonly startSession: () => void;
-	/** The host listing the extension reads, for assertions that need it. */
-	readonly tools: PublishedToolStub[];
+	/** Runs the `before_agent_start` handlers the extension registered. */
+	readonly startRun: () => void;
 }
 
-function loadTools({ editSchema = REPLACE_EDIT_SCHEMA, readDescription, fusion, invokeTool }: LoadOptions = {}): Harness {
+function loadTools({ listing, fusion, invokeTool, model = DOWNGRADED_MODEL }: LoadOptions = {}): Harness {
 	const registered = new Map<string, ToolDefinition>();
-	const handlers = new Map<string, Array<() => void>>();
-	const tools = publishedTools(editSchema, readDescription);
+	const handlers = new Map<string, Array<(event: unknown, context: unknown) => void>>();
+	const tools = publishedTools(listing);
 	const pi = {
 		registerTool: (tool: ToolDefinition) => registered.set(tool.name, tool),
-		on: (name: string, handler: () => void) => {
+		on: (name: string, handler: (event: unknown, context: unknown) => void) => {
 			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
 		},
 		getAllTools: () => tools,
@@ -104,15 +116,11 @@ function loadTools({ editSchema = REPLACE_EDIT_SCHEMA, readDescription, fusion, 
 	const edit = registered.get("edit");
 	const write = registered.get("write");
 	if (!edit || !write) throw new Error("action fusion did not register edit and write");
-	return {
-		edit,
-		write,
-		registered,
-		tools,
-		startSession: () => {
-			for (const handler of handlers.get("session_start") ?? []) handler();
-		},
+	const fire = (event: string) => {
+		const context = model === null ? {} : { model };
+		for (const handler of handlers.get(event) ?? []) handler({ type: event }, context);
 	};
+	return { edit, write, registered, startSession: () => fire("session_start"), startRun: () => fire("before_agent_start") };
 }
 
 function context(cwd: string, invokeTool?: InvokeTool): ExtensionContext {
@@ -154,15 +162,24 @@ afterEach(async () => {
 
 describe("Action Fusion host built-in inheritance", () => {
 	it("advertises the parameter shape the host published for the active session", () => {
-		expect(propertiesOf(loadTools({ editSchema: HASHLINE_EDIT_SCHEMA }).edit)).toEqual(["input", "then_run"]);
-		expect(propertiesOf(loadTools({ editSchema: REPLACE_EDIT_SCHEMA }).edit)).toEqual(["path", "edits", "then_run"]);
+		expect(propertiesOf(loadTools({ listing: { editSchema: HASHLINE_EDIT_SCHEMA } }).edit)).toEqual([
+			"input",
+			"then_run",
+		]);
+		expect(propertiesOf(loadTools({ listing: { editSchema: REPLACE_EDIT_SCHEMA } }).edit)).toEqual([
+			"path",
+			"old_string",
+			"new_string",
+			"then_run",
+		]);
 		expect(propertiesOf(loadTools().write)).toEqual(["path", "content", "then_run"]);
 	});
 
 	it("prefers the built-in entry and tolerates a host without a tool listing", () => {
-		const tools = publishedTools(HASHLINE_EDIT_SCHEMA);
-		const pi = { getAllTools: () => tools } as unknown as ExtensionAPI;
-		expect(publishedTool(pi, "edit")?.description).toBe("Edit a file");
+		const tools = publishedTools({ editSchema: HASHLINE_EDIT_SCHEMA });
+		expect(publishedTool({ getAllTools: () => tools } as unknown as ExtensionAPI, "edit")?.description).toBe(
+			"Edit a file",
+		);
 
 		expect(publishedTool({} as unknown as ExtensionAPI, "edit")).toBeUndefined();
 		expect(
@@ -185,14 +202,22 @@ describe("Action Fusion host built-in inheritance", () => {
 		);
 	});
 
-	it("reads the session's edit variant from the published read description", () => {
-		const variantOf = (readDescription: string) =>
-			sessionEditVariant({
-				getAllTools: () => publishedTools(HASHLINE_EDIT_SCHEMA, readDescription),
-			} as unknown as ExtensionAPI);
+	it("reads the variant from the built-in edit schema while the host still publishes it", () => {
+		const variantOf = (listing: ListingOptions) =>
+			sessionEditVariant({ getAllTools: () => publishedTools(listing) } as unknown as ExtensionAPI);
 
-		expect(variantOf(HASHLINE_READ_DESCRIPTION)).toBe("hashline");
-		expect(variantOf(PLAIN_READ_DESCRIPTION)).toBe("replace");
+		expect(variantOf({ editSchema: HASHLINE_EDIT_SCHEMA, readDescription: PLAIN_READ_DESCRIPTION })).toBe("hashline");
+		expect(variantOf({ editSchema: REPLACE_EDIT_SCHEMA, readDescription: HASHLINE_READ_DESCRIPTION })).toBe("replace");
+	});
+
+	it("falls back to the read description once the host no longer publishes the built-in edit", () => {
+		const variantOf = (listing: ListingOptions) =>
+			sessionEditVariant({ getAllTools: () => publishedTools(listing) } as unknown as ExtensionAPI);
+		const replaced: ListingOptions = { editSource: "extension" };
+
+		expect(variantOf({ ...replaced, readDescription: HASHLINE_READ_DESCRIPTION })).toBe("hashline");
+		expect(variantOf({ ...replaced, readDescription: PLAIN_READ_DESCRIPTION })).toBe("replace");
+		expect(variantOf({ ...replaced, readDescription: null })).toBeUndefined();
 		expect(
 			sessionEditVariant({
 				getAllTools: () => {
@@ -202,7 +227,7 @@ describe("Action Fusion host built-in inheritance", () => {
 		).toBeUndefined();
 
 		process.env.PI_EDIT_VARIANT = "hashline";
-		expect(variantOf(PLAIN_READ_DESCRIPTION)).toBe("hashline");
+		expect(variantOf({ ...replaced, readDescription: PLAIN_READ_DESCRIPTION })).toBe("hashline");
 		delete process.env.PI_EDIT_VARIANT;
 	});
 
@@ -217,26 +242,39 @@ describe("Action Fusion host built-in inheritance", () => {
 		else process.env.PI_EDIT_VARIANT = previous;
 	});
 
-	it("replaces the advertised edit shape with the session's variant once the session starts", () => {
-		const harness = loadTools({ editSchema: HASHLINE_EDIT_SCHEMA, readDescription: PLAIN_READ_DESCRIPTION });
-		expect(harness.edit.description).toBe("Edit a file");
+	it("resolves the variant from the active model once the host replaces its own edit", () => {
+		const variantFor = (model: { provider: string; id: string }) =>
+			sessionEditVariant({ getAllTools: () => publishedTools({ editSource: "extension" }) } as unknown as ExtensionAPI, model);
 
-		harness.startSession();
+		expect(variantFor({ provider: "kimi-code", id: "k3-256k" })).toBe("replace");
+		expect(variantFor({ provider: "deepseek", id: "deepseek-flash" })).toBe("replace");
+		expect(variantFor({ provider: "z-ai", id: "glm-5.3-flash" })).toBe("replace");
+		expect(variantFor({ provider: "openai-codex", id: "gpt-6-astra" })).toBe("hashline");
+		expect(variantFor({ provider: "anthropic", id: "claude-opus-4" })).toBe("hashline");
+	});
 
+	it("corrects the advertised edit shape from either hook that runs before a request", () => {
 		const expected = editDefinitionForVariant(process.cwd(), "replace");
-		expect(harness.edit.description).toBe(expected.description);
-		expect(harness.edit.description).not.toBe("Edit a file");
-		expect(propertiesOf(harness.edit)).toContain("then_run");
+		const fromSessionStart = loadTools({ listing: { editSource: "extension" } });
+		expect(fromSessionStart.edit.description).toBe("Edit a file");
+		fromSessionStart.startSession();
+		expect(fromSessionStart.edit.description).toBe(expected.description);
+		expect(propertiesOf(fromSessionStart.edit)).toContain("then_run");
+
+		const fromAgentStart = loadTools({ listing: { editSource: "extension" } });
+		fromAgentStart.startRun();
+		expect(fromAgentStart.edit.description).toBe(expected.description);
 	});
 
 	it("keeps the advertised shape when the host publishes no variant signal", () => {
-		const harness = loadTools({ editSchema: HASHLINE_EDIT_SCHEMA, readDescription: null });
+		const harness = loadTools({ listing: { editSource: "extension", readDescription: null }, model: null });
 		const before = harness.edit.description;
 
 		harness.startSession();
+		harness.startRun();
 
 		expect(harness.edit.description).toBe(before);
-		expect(propertiesOf(harness.edit)).toEqual(["input", "then_run"]);
+		expect(propertiesOf(harness.edit)).toEqual(["path", "old_string", "new_string", "then_run"]);
 	});
 
 	it("treats hashline patches and device targets as having no single file", () => {
@@ -305,7 +343,7 @@ describe("Action Fusion host built-in inheritance", () => {
 		});
 		const commands: string[] = [];
 		const { edit } = loadTools({
-			editSchema: HASHLINE_EDIT_SCHEMA,
+			listing: { editSchema: HASHLINE_EDIT_SCHEMA },
 			fusion: {
 				bashOptions: {
 					operations: {
@@ -341,7 +379,7 @@ describe("Action Fusion host built-in inheritance", () => {
 			details: { perFileResults: [{ path: gone }, { path: join(dir, "kept.txt") }] },
 		}));
 		const { edit } = loadTools({
-			editSchema: HASHLINE_EDIT_SCHEMA,
+			listing: { editSchema: HASHLINE_EDIT_SCHEMA },
 			fusion: {
 				bashOptions: {
 					operations: {

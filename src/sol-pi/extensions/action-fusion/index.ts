@@ -37,6 +37,7 @@ import {
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import {
+	type ActiveModelLike,
 	type EditVariant,
 	editDefinitionForVariant,
 	publishedTool,
@@ -153,10 +154,10 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 		const publishedEdit = publishedTool(pi, "edit");
 		const publishedWrite = publishedTool(pi, "write");
 
-		// The host reads these properties on every request, so the session-start
-		// handler below can correct the advertised shape in place once it learns
-		// which variant the session resolved to; re-registering a tool after the
-		// session started does not take effect.
+		// The host reads these properties on every request, so the hooks below can
+		// correct the advertised shape in place once the session's variant is
+		// readable; re-registering a tool after the session started does not take
+		// effect.
 		const advertisedEdit: { parameters: TSchema; description: string } = {
 			parameters: withOptionalProperty(
 				publishedEdit?.parameters ?? editTemplate.parameters,
@@ -281,11 +282,13 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 			},
 		});
 
-		// The host publishes the session's edit variant only once action methods are
-		// callable, so the shape advertised above is corrected here — after loading
-		// and before the first model request.
-		pi.on("session_start", () => {
-			const variant = sessionEditVariant(pi);
+		// The variant is only readable once host action methods are callable, and the
+		// host serializes a tool's schema before `turn_start` runs. Both hooks that
+		// run earlier than that attempt the correction: `session_start` for hosts
+		// that load extensions first, `before_agent_start` for hosts that load them
+		// afterwards.
+		const syncAdvertisedVariant = (model: ActiveModelLike | undefined): void => {
+			const variant = sessionEditVariant(pi, model);
 			if (variant === undefined || variant === advertisedVariant) return;
 			const template = editDefinitionForVariant(process.cwd(), variant, options.editOptions);
 			advertisedVariant = variant;
@@ -295,7 +298,9 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				createThenRunSchema(EDIT_THEN_RUN_DESCRIPTION),
 			);
 			advertisedEdit.description = template.description;
-		});
+		};
+		pi.on("session_start", (_event, context) => syncAdvertisedVariant(context?.model));
+		pi.on("before_agent_start", (_event, context) => syncAdvertisedVariant(context?.model));
 	};
 }
 

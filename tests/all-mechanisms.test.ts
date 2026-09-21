@@ -73,6 +73,7 @@ describe("SoL-Pi entrypoint", () => {
 		expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["edit", "write", "obs_recall", "update_plan"]);
 		expect([...pi.handlers.keys()].sort()).toEqual([
 			"agent_settled",
+			"before_agent_start",
 			"before_provider_request",
 			"context",
 			"input",

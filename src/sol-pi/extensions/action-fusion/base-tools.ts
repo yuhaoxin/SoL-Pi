@@ -14,11 +14,10 @@
  * - Registering a tool replaces its registry entry, so once SoL-Pi registers its
  *   fused `edit`, the host's own `edit` entry is no longer published.
  *
- * What stays observable is `read`: SoL-Pi never replaces it, its description is
- * rendered from the same edit-mode resolution, and it names the hashline anchors
- * only in the `hashline` variant. Reading it from a `session_start` handler —
- * which runs after action methods become callable and before the first model
- * request — is therefore how the fused tool learns which schema to advertise.
+ * The session's variant is therefore read from the host after loading: from the
+ * built-in `edit` schema while the host still publishes it, and otherwise from
+ * the `read` tool, which SoL-Pi never replaces and whose description is rendered
+ * from the same edit-mode resolution.
  */
 
 import {
@@ -51,8 +50,8 @@ interface PublishedToolEntry {
 const EDIT_VARIANT_ENV = "PI_EDIT_VARIANT";
 
 /**
- * Matches the hashline anchor the `read` tool advertises in its description
- * (`[foo.ts#1A2B]` snapshot header) and never in the other variants.
+ * Matches the patch-language anchor the `read` tool advertises in its
+ * description (`[foo.ts#1A2B]` snapshot header) and never in the other variants.
  */
 const HASHLINE_ANCHOR_RE = /snapshot header|\[[^\]\s]*#[0-9A-Fa-f]{4}\]/u;
 
@@ -71,6 +70,13 @@ function publishedEntries(pi: ExtensionAPI): PublishedToolEntry[] {
 	}
 }
 
+function asPublishedTool(entry: PublishedToolEntry): PublishedTool | undefined {
+	const parameters = entry.parameters;
+	if (typeof parameters !== "function" && (typeof parameters !== "object" || parameters === null)) return undefined;
+	const description = typeof entry.description === "string" && entry.description.length > 0 ? entry.description : undefined;
+	return { description, parameters: parameters as TSchema };
+}
+
 /**
  * The host's published definition for `name`, preferring the entry the host
  * itself marks as a built-in.
@@ -83,11 +89,18 @@ export function publishedTool(pi: ExtensionAPI, name: string): PublishedTool | u
 	const entries = publishedEntries(pi);
 	const builtIn = entries.find((entry) => entry.name === name && entry.sourceInfo?.source === "builtin");
 	const match = builtIn ?? entries.find((entry) => entry.name === name);
-	if (match === undefined) return undefined;
-	const parameters = match.parameters;
-	if (typeof parameters !== "function" && (typeof parameters !== "object" || parameters === null)) return undefined;
-	const description = typeof match.description === "string" && match.description.length > 0 ? match.description : undefined;
-	return { description, parameters: parameters as TSchema };
+	return match === undefined ? undefined : asPublishedTool(match);
+}
+
+/**
+ * The host's published definition for `name` while the host still marks it as a
+ * built-in, which holds only until SoL-Pi's replacement takes effect.
+ */
+function publishedBuiltinTool(pi: ExtensionAPI, name: string): PublishedTool | undefined {
+	const match = publishedEntries(pi).find(
+		(entry) => entry.name === name && entry.sourceInfo?.source === "builtin",
+	);
+	return match === undefined ? undefined : asPublishedTool(match);
 }
 
 /**
@@ -103,19 +116,84 @@ export function requestedToolPath(params: object): string | undefined {
 }
 
 /**
+ * The model families whose editing support the host downgrades from the patch
+ * language to single-file replacement. The downgrade itself stays the host's
+ * decision; this only states which models it applies to, so the fused schema
+ * can match the schema the host will accept. A pinned `PI_EDIT_VARIANT` or a
+ * host that reports its own variant makes this rule unnecessary.
+ */
+const DOWNGRADED_EDIT_MODEL_RE =
+	/(^|[/-])(kimi|mimo|minimax|deepseek|stepfun)([/-]|$)|codex-spark|glm[^/]*?flash[^/]*?5\.3|glm[^/]*?5\.3[^/]*?flash/iu;
+
+/** The parts of a host model this module reads. */
+export interface ActiveModelLike {
+	readonly provider?: unknown;
+	readonly id?: unknown;
+}
+
+function downgradedEditModel(model: ActiveModelLike | undefined): boolean {
+	const provider = typeof model?.provider === "string" ? model.provider : "";
+	const id = typeof model?.id === "string" ? model.id : "";
+	if (provider.length === 0 && id.length === 0) return false;
+	return DOWNGRADED_EDIT_MODEL_RE.test(`${provider}/${id}`);
+}
+
+/**
  * Which edit parameter variant the session uses.
  *
  * `PI_EDIT_VARIANT`, when set, decides outright, because the host honors it
- * above its own resolution. Otherwise the answer comes from the `read` tool's
- * published description (see the module comment). `undefined` means the host
- * could not be asked, and callers keep the variant they already advertise.
+ * above its own resolution. Otherwise the built-in `edit` schema answers while
+ * the host still publishes it, and after that the active model does, because the
+ * host resolves the variant from the model. The `read` tool's description is the
+ * last resort: the host renders it once when it builds its tools, so it reports
+ * the variant that was active then, not the current one.
+ *
+ * `undefined` means nothing could answer yet, and callers keep the variant they
+ * already advertise.
  */
-export function sessionEditVariant(pi: ExtensionAPI): EditVariant | undefined {
+export function sessionEditVariant(pi: ExtensionAPI, model?: ActiveModelLike): EditVariant | undefined {
 	const pinned = process.env[EDIT_VARIANT_ENV];
 	if (pinned === "hashline" || pinned === "replace") return pinned;
+
+	const builtInEdit = publishedBuiltinTool(pi, "edit");
+	if (builtInEdit !== undefined) {
+		const properties = schemaPropertyNames(builtInEdit.parameters);
+		if (properties.includes("input")) return "hashline";
+		if (properties.includes("path")) return "replace";
+	}
+
+	if (model !== undefined && (typeof model.provider === "string" || typeof model.id === "string")) {
+		return downgradedEditModel(model) ? "replace" : "hashline";
+	}
+
 	const read = publishedTool(pi, "read");
 	if (read?.description === undefined) return undefined;
 	return HASHLINE_ANCHOR_RE.test(read.description) ? "hashline" : "replace";
+}
+
+/** The `properties` names behind any published parameter schema shape. */
+function schemaPropertyNames(parameters: unknown): string[] {
+	const document = schemaDocument(parameters);
+	if (document === undefined) return [];
+	const properties: unknown = Reflect.get(document, "properties");
+	return typeof properties === "object" && properties !== null ? Object.keys(properties) : [];
+}
+
+/**
+ * The JSON Schema document behind a published parameter schema: a schema that
+ * already carries a `properties` map, or a callable schema whose document only
+ * `toJsonSchema()` exposes.
+ */
+function schemaDocument(parameters: unknown): object | undefined {
+	if (typeof parameters === "function") {
+		const toJsonSchema: unknown = Reflect.get(parameters, "toJsonSchema");
+		return typeof toJsonSchema === "function" ? (toJsonSchema.call(parameters) as object) : undefined;
+	}
+	if (typeof parameters !== "object" || parameters === null) return undefined;
+	const direct: unknown = Reflect.get(parameters, "properties");
+	if (typeof direct === "object" && direct !== null) return parameters;
+	const toJsonSchema: unknown = Reflect.get(parameters, "toJsonSchema");
+	return typeof toJsonSchema === "function" ? (toJsonSchema.call(parameters) as object) : undefined;
 }
 
 /**

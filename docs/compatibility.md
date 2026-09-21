@@ -19,7 +19,7 @@ The built-in edit/write definitions capture their working directory, so SoL-Pi c
 
 Where the host publishes its registered tools (`getAllTools()`) and binds a delegation entry point (`ctx.invokeTool()`), the fused schema is the host's own schema for that tool plus `then_run`, and the mutation runs through the host's entry point, so the session's edit store, device dispatch, approvals, and settings apply to a fused call. A host without that surface composes the same definition itself and calls it directly.
 
-The host may resolve the built-in `edit` parameter shape per session and publish it only after extension loading. SoL-Pi therefore corrects the advertised shape from the host's `read` tool, whose published description names the patch-language anchors only in that variant: its `session_start` handler rewrites the fused schema and description in place when the session's variant differs from the one it advertised. A pinned `PI_EDIT_VARIANT` decides the variant outright, and a host that publishes no description keeps the shape already advertised.
+The host may resolve the built-in `edit` parameter shape per session and publish it only after extension loading. SoL-Pi therefore corrects the advertised shape from the host's own resolution: the built-in `edit` schema answers while the host still publishes it, and otherwise the `read` tool does, because its published description names the patch-language anchors only in that variant and no SoL-Pi mechanism replaces it. A pinned `PI_EDIT_VARIANT` decides the variant outright, and a host that publishes neither signal keeps the shape already advertised. Both hooks that run before the host serializes a request attempt the correction — `session_start` for hosts that load extensions first, `before_agent_start` for hosts that load them afterwards — and the host reads the fused tool's schema and description per request, so the corrected shape reaches the model without re-registering the tool.
 
 Action Fusion decodes `file://` targets with Node's `fileURLToPath()` before resolving the queue and hash-check path. This keeps file URLs, including percent-encoded filenames and Pi's optional `@` prefix, aligned with the file handled by the built-in mutation tool. A call that names no single file — a patch whose targets live in the patch text, or a device write such as `xd://resolve` — takes a working-directory-wide queue slot and hash-checks every path the mutation reports in its result details (`path`, `perFileResults[].path`), skipping the check when it reports none.
 
@@ -92,10 +92,12 @@ the values the host passes instead of assuming Pi's shape:
   loading — a registration from a session event leaves the earlier definition in
   place — while the host reads a definition's `parameters` and `description` on
   every request. The fused `edit` therefore publishes both as accessors and its
-  `session_start` handler rewrites the advertised shape in place once the
-  variant is readable. `sessionEditVariant()` reads that variant from the `read`
-  tool's published description, which omp renders from the same edit-mode
-  resolution and which no SoL-Pi mechanism replaces.
+  `session_start` and `before_agent_start` handlers rewrite the advertised shape
+  in place once the variant is readable; the host serializes a request before
+  `turn_start`, so those two hooks are the last ones that can land in the same
+  turn. `sessionEditVariant()` reads the variant from the built-in `edit` schema
+  while omp still publishes it and otherwise from the `read` tool's published
+  description, which omp renders from the same edit-mode resolution.
 - `PI_EDIT_VARIANT` names the edit variant outright in omp's own resolution, and
   its edit factory reads the same variable when it constructs a definition.
   `editDefinitionForVariant()` sets it for that synchronous construction and
