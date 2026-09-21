@@ -11,6 +11,20 @@ import { PLAN_STATUSES, type PlanStep } from "./plan.ts";
 
 const COMPACT_CONDITION = "compacts only when projected savings are positive";
 
+const UPDATE_PLAN_DESCRIPTION =
+	"Replace the complete working plan. A newly completed step becomes a safe point where SoL-Pi may compact context if doing so is economical.";
+/** Pi renders these as the tool's guidelines; hosts that drop that field get them appended instead. */
+const UPDATE_PLAN_GUIDANCE = [
+	"Send the complete plan on every update_plan call.",
+	"Keep at most one step in_progress and mark finished steps completed.",
+	"When completing a step, include concise progress evidence when available.",
+];
+
+export interface OnlineToolsOptions {
+	/** Whether the host renders `promptGuidelines`; see `rendersToolPromptMetadata`. */
+	readonly toolPromptMetadata?: boolean;
+}
+
 export type PlanProgress = {
 	readonly files_changed: readonly string[];
 	readonly verification: readonly string[];
@@ -47,18 +61,20 @@ const planStepSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
-export function registerOnlineTools(pi: ExtensionAPI, handlers: OnlineToolHandlers): void {
+export function registerOnlineTools(
+	pi: ExtensionAPI,
+	handlers: OnlineToolHandlers,
+	options: OnlineToolsOptions = {},
+): void {
+	const promptMetadata = options.toolPromptMetadata ?? true;
 	pi.registerTool({
 		name: "update_plan",
 		label: "Update plan",
-		description:
-			"Replace the complete working plan. A newly completed step becomes a safe point where SoL-Pi may compact context if doing so is economical.",
+		description: promptMetadata
+			? UPDATE_PLAN_DESCRIPTION
+			: `${UPDATE_PLAN_DESCRIPTION} ${UPDATE_PLAN_GUIDANCE.join(" ")}`,
 		promptSnippet: "Keep the working plan current",
-		promptGuidelines: [
-			"Send the complete plan on every update_plan call.",
-			"Keep at most one step in_progress and mark finished steps completed.",
-			"When completing a step, include concise progress evidence when available.",
-		],
+		promptGuidelines: UPDATE_PLAN_GUIDANCE,
 		renderShell: "self",
 		parameters: Type.Object(
 			{

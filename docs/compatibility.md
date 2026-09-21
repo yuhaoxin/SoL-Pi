@@ -88,6 +88,12 @@ the values the host passes instead of assuming Pi's shape:
   that does not exist.
 - `ExtensionContext.getSystemPrompt()` returns one string on Pi and the prompt's
   lines on omp; token accounting joins the lines.
+- Pi renders a tool's `promptSnippet` and `promptGuidelines` into its system
+  prompt. omp declares `promptGuidelines` but never reads it and has no
+  `promptSnippet` field, so on omp the same guidance is appended to the tool
+  description instead of being dropped: `obs_recall` carries its retrieval hint
+  and `update_plan` its three plan rules. Action Fusion's `then_run` guidance
+  already travels in the parameter description on both hosts.
 - A session without a persistent session directory (omp `--no-session`) skips
   archiving rather than failing the request it is handling. `obs_recall` reports
   that nothing was stored.

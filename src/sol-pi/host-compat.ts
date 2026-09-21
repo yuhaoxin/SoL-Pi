@@ -257,6 +257,20 @@ export function systemPromptText(context: ExtensionContext): string {
 	return typeof prompt === "string" ? prompt : "";
 }
 
+/**
+ * Whether the host renders a tool's `promptSnippet` and `promptGuidelines` into
+ * the system prompt.
+ *
+ * Pi 0.85.1 normalizes both into its prompt builder, so a tool's usage guidance
+ * reaches the model there. omp declares `promptGuidelines` but never reads it and
+ * has no `promptSnippet` field at all, so on such a host the same guidance has to
+ * travel in the tool description instead. Managed timers are the observable host
+ * marker this port already keys its other differences off.
+ */
+export function rendersToolPromptMetadata(context: ExtensionContext): boolean {
+	return !usesManagedTimers(context);
+}
+
 export type BoundaryTrigger = "deferred" | "settle" | "unavailable";
 
 /**

@@ -98,6 +98,24 @@ describe("observation pack", () => {
 		expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["obs_recall"]);
 	});
 
+	it("appends its usage guidance when the host drops the prompt snippet", () => {
+		const withoutMetadata = createObservationPackExtension({ toolPromptMetadata: false });
+		const pi = new FakePi();
+		withoutMetadata(pi.asExtensionApi());
+
+		const description = pi.tool("obs_recall").description ?? "";
+		expect(description).toContain("Use it after a large tool result was replaced by a placeholder");
+		expect(description).toContain("next_offset");
+	});
+
+	it("leaves the description to the prompt snippet on hosts that render it", () => {
+		const pi = observationPackPi();
+
+		expect(pi.tool("obs_recall").description).toBe(
+			"Read a stored large tool result by observation id and byte offset.",
+		);
+	});
+
 	it("renders observation recall as an English lightning savings call", () => {
 		const recall = observationPackPi().tool("obs_recall");
 		const args = { id: "obs_0123456789abcdef01234567", offset: 0 };

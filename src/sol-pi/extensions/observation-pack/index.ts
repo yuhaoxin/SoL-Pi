@@ -59,6 +59,16 @@ const RECALL_LIMITS = {
 
 const RECALL_SAVING = "full observation replay avoided";
 
+const OBS_RECALL_DESCRIPTION = "Read a stored large tool result by observation id and byte offset.";
+/** Pi renders the tool's `promptSnippet`; hosts that drop that field get it appended instead. */
+const OBS_RECALL_GUIDANCE =
+	"Use it after a large tool result was replaced by a placeholder, and continue with the returned next_offset.";
+
+export interface ObservationPackOptions {
+	/** Whether the host renders `promptSnippet`; see `rendersToolPromptMetadata`. */
+	readonly toolPromptMetadata?: boolean;
+}
+
 /** First non-empty text line of a tool result, used to report a failed recall. */
 function firstTextLine(result: { content: readonly { type: string; text?: string }[] }): string | undefined {
 	for (const block of result.content) {
@@ -69,7 +79,8 @@ function firstTextLine(result: { content: readonly { type: string; text?: string
 	return undefined;
 }
 
-export function createObservationPackExtension(): ExtensionFactory {
+export function createObservationPackExtension(options: ObservationPackOptions = {}): ExtensionFactory {
+	const promptMetadata = options.toolPromptMetadata ?? true;
 	return (pi: ExtensionAPI) => {
 		const sentCounts = new Map<string, number>();
 		const ledgers = new Map<string, Ledger>();
@@ -87,7 +98,9 @@ export function createObservationPackExtension(): ExtensionFactory {
 		pi.registerTool({
 			name: "obs_recall",
 			label: "Recall Observation",
-			description: "Read a stored large tool result by observation id and byte offset.",
+			description: promptMetadata
+				? OBS_RECALL_DESCRIPTION
+				: `${OBS_RECALL_DESCRIPTION} ${OBS_RECALL_GUIDANCE}`,
 			promptSnippet: "Recall a paged excerpt from a previously replaced large tool result",
 			renderShell: "self",
 			parameters: Type.Object({
@@ -251,8 +264,8 @@ export {
 	THRESHOLD_BYTES,
 } from "./observation.ts";
 
-export function registerObservationPack(pi: ExtensionAPI): void {
-	createObservationPackExtension()(pi);
+export function registerObservationPack(pi: ExtensionAPI, options: ObservationPackOptions = {}): void {
+	createObservationPackExtension(options)(pi);
 }
 
 export default registerObservationPack;

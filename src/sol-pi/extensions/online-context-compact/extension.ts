@@ -50,6 +50,8 @@ export const POST_COMPACTION_PLAN_REMINDER =
 export type OnlineContextCompactOptions = {
 	readonly cacheWriteReadRatio?: number | null;
 	readonly keepRecentTokens?: number;
+	/** Whether the host renders `promptGuidelines`; see `rendersToolPromptMetadata`. */
+	readonly toolPromptMetadata?: boolean;
 };
 
 type PendingBoundary = { readonly toolCallId: string };
@@ -237,7 +239,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 					},
 				);
 			},
-		});
+		}, { toolPromptMetadata: options.toolPromptMetadata ?? true });
 
 		pi.on("session_start", (_event, context) => restore(context));
 		pi.on("session_before_tree", () => (compactionInFlight ? { cancel: true } : undefined));

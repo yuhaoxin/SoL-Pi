@@ -74,6 +74,15 @@ describe("Online Context Compact extension", () => {
 		]);
 	});
 
+	it("appends its plan guidance when the host drops the prompt guidelines", () => {
+		const pi = new FakePi();
+		createOnlineContextCompactExtension({ toolPromptMetadata: false })(pi.asExtensionApi());
+
+		const description = pi.tool("update_plan").description ?? "";
+		expect(description).toContain("Send the complete plan on every update_plan call.");
+		expect(description).toContain("Keep at most one step in_progress");
+	});
+
 	it("uses Pi's retained-tail default and validates overrides", () => {
 		expect(resolveKeepRecentTokens(undefined)).toBe(DEFAULT_KEEP_RECENT_TOKENS);
 		expect(() => resolveKeepRecentTokens(0)).toThrow(/positive safe integer/u);
