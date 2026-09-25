@@ -1,0 +1,46 @@
+# Verify the SoL-Pi adaptation layer against a matrix of published omp versions.
+name: omp compatibility
+
+on:
+  push:
+    branches: [main, omp-compat]
+  pull_request:
+  schedule:
+    # Weekly, so a newly published omp "latest" is tested even without pushes.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  omp:
+    name: omp ${{ matrix.omp }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 18.2.6 is the recorded verification baseline and 18.3.1 the version
+        # exercised in live session testing (see docs/compatibility.md);
+        # "latest" follows npm for drift detection.
+        omp: ["18.2.6", "18.3.0", "18.3.1", "latest"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install omp ${{ matrix.omp }}
+        run: npm install --no-save --prefix "$RUNNER_TEMP/omp" "@oh-my-pi/pi-coding-agent@${{ matrix.omp }}"
+      - name: Check the shim surface
+        run: >-
+          OMP_CODING_AGENT_DIR="$RUNNER_TEMP/omp/node_modules/@oh-my-pi/pi-coding-agent"
+          bun scripts/check-omp-compat.mjs
