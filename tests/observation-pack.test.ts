@@ -98,6 +98,12 @@ describe("observation pack", () => {
 		expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["obs_recall"]);
 	});
 
+	it("declares obs_recall a read-tier tool for hosts that enforce approvals", () => {
+		const pi = observationPackPi();
+
+		expect((pi.tool("obs_recall") as { approval?: unknown }).approval).toBe("read");
+	});
+
 	it("appends its usage guidance when the host drops the prompt snippet", () => {
 		const withoutMetadata = createObservationPackExtension({ toolPromptMetadata: false });
 		const pi = new FakePi();

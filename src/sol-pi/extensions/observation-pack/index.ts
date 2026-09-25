@@ -18,13 +18,10 @@
  */
 
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import {
-	resolveCallRender,
-	resolveResultRender,
-} from "../../host-compat.ts";
+import { resolveCallRender, resolveResultRender, withApproval } from "../../host-compat.ts";
 import { runtimeRootIfAvailable } from "../../runtime-paths.ts";
 import {
 	decorateWithSolPi,
@@ -95,7 +92,12 @@ export function createObservationPackExtension(options: ObservationPackOptions =
 			return ledger;
 		};
 
-		pi.registerTool({
+		const recallParameters = Type.Object({
+			id: Type.String({ description: "Observation id from a placeholder" }),
+			offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, default 0" })),
+		});
+		// Read-only recall; omp would otherwise default the tool to exec tier.
+		const recallTool: ToolDefinition<typeof recallParameters> = {
 			name: "obs_recall",
 			label: "Recall Observation",
 			description: promptMetadata
@@ -103,10 +105,7 @@ export function createObservationPackExtension(options: ObservationPackOptions =
 				: `${OBS_RECALL_DESCRIPTION} ${OBS_RECALL_GUIDANCE}`,
 			promptSnippet: "Recall a paged excerpt from a previously replaced large tool result",
 			renderShell: "self",
-			parameters: Type.Object({
-				id: Type.String({ description: "Observation id from a placeholder" }),
-				offset: Type.Optional(Type.Integer({ minimum: 0, description: "Byte offset, default 0" })),
-			}),
+			parameters: recallParameters,
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				if (!isObservationId(params.id)) throw new Error(`Unknown observation id: ${params.id}`);
 				const root = runtimeRootIfAvailable(ctx);
@@ -175,7 +174,8 @@ export function createObservationPackExtension(options: ObservationPackOptions =
 				);
 				return decorateWithSolPi(view.theme, "Observation Pack", RECALL_SAVING, base);
 			},
-		});
+		};
+		pi.registerTool(withApproval(recallTool, "read"));
 
 		pi.on("context", async (event, ctx: ExtensionContext) => {
 			const root = runtimeRootIfAvailable(ctx);

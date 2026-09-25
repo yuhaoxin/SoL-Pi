@@ -12,9 +12,26 @@ import { recordValue } from "./config.ts";
 const THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
 const THEN_RUN_FAILED = "[then_run:failed]";
 
+/**
+ * How a host exposes the full bytes of a truncated tool result. omp stores them
+ * as a session artifact and names only the id in the inline text; its session
+ * manager resolves the id to a path. Pi's session manager has no such method,
+ * so the artifact branch below never engages there.
+ */
+export interface FullOutputArtifacts {
+	readonly getArtifactPath?: (artifactId: string) => Promise<string | null>;
+}
+
 export interface ReducibleToolResult {
 	readonly command: string;
 	readonly body: string;
+	/**
+	 * The host truncated the inline result and the full bytes could not be
+	 * recovered, so `body` is only a preview. Reducing it would check evidence
+	 * against bytes the command never produced as a whole, so callers must skip
+	 * the result instead.
+	 */
+	readonly fullOutputMissing?: boolean;
 	/** Put the receipt back where the raw output was, leaving the rest of the result alone. */
 	readonly projectReceipt: (receipt: string) => ToolResultEvent["content"];
 }
@@ -40,35 +57,90 @@ async function safePiBashTempPath(path: string | undefined): Promise<boolean> {
 		return false;
 	}
 }
+interface ExactBody {
+	readonly body: string;
+	readonly fullOutputMissing: boolean;
+}
+
+/** The artifact id omp's truncation metadata carries (`details.meta.truncation`). */
+function truncationArtifactId(details: unknown): string | undefined {
+	const truncation = recordValue(recordValue(details, "meta"), "truncation");
+	const id = recordValue(truncation, "artifactId");
+	return typeof id === "string" && id.length > 0 ? id : undefined;
+}
 
 /**
- * Prefer the untruncated file pi wrote for a large bash result, so evidence is
- * checked against the exact bytes the command produced rather than a preview.
+ * The artifact id in omp's inline truncation notice. Match the full notice
+ * (`Read artifact://N for full output`) rather than any `artifact://` mention,
+ * so command output that merely contains an artifact URL is not mistaken for a
+ * truncated result.
  */
-async function exactBodyFromInline(inline: string, details: unknown): Promise<string> {
+function inlineArtifactId(inline: string): string | undefined {
+	return /Read artifact:\/\/([^\s)]+) for full output/u.exec(inline)?.[1];
+}
+
+async function readArtifactBody(artifacts: FullOutputArtifacts, id: string): Promise<string | undefined> {
+	try {
+		const path = await artifacts.getArtifactPath?.(id);
+		if (!path) return undefined;
+		const status = await lstat(path);
+		if (!status.isFile() || status.isSymbolicLink()) return undefined;
+		return await readFile(path, "utf8");
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Recover the exact bytes the command produced rather than the preview the
+ * result carries. Pi writes large bash output to a `pi-bash-*.log` temp file;
+ * omp stores it as a session artifact and inlines only a truncation notice. An
+ * omp result whose artifact cannot be read is marked `fullOutputMissing` so the
+ * caller skips it instead of checking evidence against a truncated preview.
+ */
+async function exactBodyFromInline(
+	inline: string,
+	details: unknown,
+	artifacts?: FullOutputArtifacts,
+): Promise<ExactBody> {
 	const detailsPath = detailsFullOutputPath(details);
 	const inlineMatch = inline.match(/Full output:\s*([^\]\r\n]+)/u);
 	const candidate = detailsPath ?? inlineMatch?.[1]?.trim();
-	if (!candidate || !(await safePiBashTempPath(candidate))) return inline;
-	try {
-		return await readFile(candidate, "utf8");
-	} catch {
-		return inline;
+	if (candidate && (await safePiBashTempPath(candidate))) {
+		try {
+			return { body: await readFile(candidate, "utf8"), fullOutputMissing: false };
+		} catch {
+			return { body: inline, fullOutputMissing: false };
+		}
 	}
+	const metaId = truncationArtifactId(details);
+	const inlineId =
+		metaId === undefined && typeof artifacts?.getArtifactPath === "function"
+			? inlineArtifactId(inline)
+			: undefined;
+	const artifactId = metaId ?? inlineId;
+	if (artifactId === undefined || artifacts === undefined) return { body: inline, fullOutputMissing: false };
+	const body = await readArtifactBody(artifacts, artifactId);
+	return body === undefined ? { body: inline, fullOutputMissing: true } : { body, fullOutputMissing: false };
 }
 
 /**
  * Identify the log inside a tool result: either a plain bash result, or the
  * command output appended by a fused `edit`/`write` call.
  */
-export async function reducibleToolResult(event: ToolResultEvent): Promise<ReducibleToolResult | undefined> {
+export async function reducibleToolResult(
+	event: ToolResultEvent,
+	artifacts?: FullOutputArtifacts,
+): Promise<ReducibleToolResult | undefined> {
 	if (event.toolName === "bash") {
 		const command = typeof event.input.command === "string" ? event.input.command : "";
 		if (!command) return undefined;
 		const inline = textContent(event);
+		const exact = await exactBodyFromInline(inline, event.details, artifacts);
 		return {
 			command,
-			body: await exactBodyFromInline(inline, event.details),
+			body: exact.body,
+			fullOutputMissing: exact.fullOutputMissing,
 			projectReceipt: (receipt) => [{ type: "text", text: receipt }],
 		};
 	}
@@ -86,9 +158,11 @@ export async function reducibleToolResult(event: ToolResultEvent): Promise<Reduc
 		const suffix = block.text.slice(suffixStart);
 		const separator = suffix.match(/^(?:\r?\n)+/u)?.[0] ?? "\n";
 		const inline = suffix.slice(separator === "\n" && !suffix.startsWith("\n") ? 0 : separator.length);
+		const exact = await exactBodyFromInline(inline, event.details, artifacts);
 		return {
 			command: commandValue,
-			body: await exactBodyFromInline(inline, event.details),
+			body: exact.body,
+			fullOutputMissing: exact.fullOutputMissing,
 			projectReceipt: (receipt) =>
 				event.content.map((content, contentIndex) =>
 					contentIndex === index && content.type === "text"

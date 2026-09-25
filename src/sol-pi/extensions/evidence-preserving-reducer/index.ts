@@ -28,7 +28,7 @@ import type {
 import { runtimeRootIfAvailable } from "../../runtime-paths.ts";
 import { formatSavingsBytes, showSolPiSavings } from "../../tui.ts";
 import { archiveBody, archiveRoot } from "./archive.ts";
-import { reducibleToolResult } from "./candidate.ts";
+import { type FullOutputArtifacts, reducibleToolResult } from "./candidate.ts";
 import {
 	DIAGNOSTIC_COMMAND,
 	isRecord,
@@ -61,8 +61,14 @@ export async function reduceToolResult(
 	event: ToolResultEvent,
 	context: ExtensionContext,
 ): Promise<ReducedToolResult | undefined> {
-	const reducible = await reducibleToolResult(event);
+	// omp's session manager resolves truncation artifact ids; Pi's has no such
+	// method, so the cast is a no-op there.
+	const reducible = await reducibleToolResult(event, context.sessionManager as unknown as FullOutputArtifacts);
 	if (!reducible || !DIAGNOSTIC_COMMAND.test(reducible.command)) return undefined;
+	if (reducible.fullOutputMissing) {
+		journal("fallback", { toolCallId: event.toolCallId, reason: "full-output-unavailable" });
+		return undefined;
+	}
 	const { body, command } = reducible;
 	if (Buffer.byteLength(body, "utf8") < config.minBytes) return undefined;
 	if (body.length > config.maxChars) {

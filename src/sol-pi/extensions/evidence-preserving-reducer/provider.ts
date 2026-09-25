@@ -6,6 +6,7 @@
 import type { Api, AssistantMessage, Context, Model, ProviderStreamOptions } from "@earendil-works/pi-ai";
 import { complete as completeCompat } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { hostAbortSignal } from "../../host-compat.ts";
 import type { ArchiveObject } from "./archive.ts";
 import type { ReducerConfig } from "./config.ts";
 import { reducerInput, reducerInstructions } from "./receipt.ts";
@@ -28,6 +29,11 @@ type CompatibleModelRegistry = {
 		options?: ProviderStreamOptions,
 	) => Promise<AssistantMessage>;
 	readonly getApiKeyAndHeaders: (model: Model<Api>) => Promise<ResolvedCompatAuth>;
+	/**
+	 * omp's registry answers `getApiKeyAndHeaders` without a `baseUrl`; the
+	 * provider's configured base URL lives on this separate query.
+	 */
+	readonly getProviderBaseUrl?: (provider: string) => string | undefined;
 };
 
 export interface NormalizedUsage {
@@ -114,7 +120,7 @@ export async function callReducer(
 ): Promise<ProviderResult> {
 	const registry = context.modelRegistry as unknown as CompatibleModelRegistry;
 	const model = resolveReducerModel(config, registry);
-	const operation = operationSignal(context.signal, config.timeoutMs);
+	const operation = operationSignal(hostAbortSignal(context), config.timeoutMs);
 	try {
 		const requestContext = {
 			systemPrompt: reducerInstructions(),
@@ -139,7 +145,10 @@ export async function callReducer(
 		} else {
 			const auth = await registry.getApiKeyAndHeaders(model);
 			if (!auth.ok) throw new Error(auth.error);
-			const legacyModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+			// omp's auth answer carries no baseUrl; the registry's per-provider
+			// query is the configured value. Pi's fork-era auth supplies it directly.
+			const baseUrl = auth.baseUrl ?? registry.getProviderBaseUrl?.(model.provider);
+			const legacyModel = baseUrl ? { ...model, baseUrl } : model;
 			const headers = stringHeaders(auth.headers);
 			response = await compatComplete(legacyModel, requestContext, {
 				...requestOptions,

@@ -523,6 +523,169 @@ describe("evidence-preserving reducer", () => {
 		expect(input).not.toContain("ERROR outside file");
 	});
 
+	it("checks evidence against the omp artifact behind a truncated result", async () => {
+		const root = await storeRoot();
+		const fullBody = `ERROR full artifact output\n${"full diagnostic\n".repeat(400)}`;
+		const artifactPath = join(root, "bash-output-7.txt");
+		await writeFile(artifactPath, fullBody, { mode: 0o600 });
+		let input = "";
+		const { context, manager, pi } = load(
+			root,
+			modelComplete(fullBody, (value) => {
+				input = value;
+				return {
+					schema: REDUCER_RECEIPT_SCHEMA,
+					source_sha256: sourceHash(value),
+					status: "failure",
+					uncertain: false,
+					evidence: [{ kind: "failure", quote: "ERROR full artifact output" }],
+				};
+			}),
+		);
+		// omp stores truncated command output as a session artifact and exposes the
+		// path through its session manager; the inline result only names the id.
+		(manager as unknown as Record<string, unknown>).getArtifactPath = async (id: string) =>
+			id === "7" ? artifactPath : null;
+
+		await pi.emit(
+			"tool_result",
+			bashEvent("ERROR truncated preview\nRead artifact://7 for full output", {
+				details: { meta: { truncation: { artifactId: "7" } } },
+			}),
+			context,
+		);
+
+		expect(input).toContain(fullBody);
+		const candidate = manager.customEntryData().find((entry) => entry.kind === "candidate");
+		expect(await readFile(String(candidate?.sourcePath), "utf8")).toBe(fullBody);
+	});
+
+	it("leaves a truncated result alone and journals when its omp artifact is unavailable", async () => {
+		const root = await storeRoot();
+		let calls = 0;
+		const { context, manager, pi } = load(root, async () => {
+			calls++;
+			throw new Error("unexpected model call");
+		});
+		(manager as unknown as Record<string, unknown>).getArtifactPath = async () => null;
+
+		const result = await pi.emit(
+			"tool_result",
+			bashEvent(`ERROR truncated preview\n${"preview line\n".repeat(400)}\nRead artifact://9 for full output`, {
+				details: { meta: { truncation: { artifactId: "9" } } },
+			}),
+			context,
+		);
+
+		expect(result).toBeUndefined();
+		expect(calls).toBe(0);
+		expect(manager.customEntryData()).toContainEqual(
+			expect.objectContaining({ kind: "fallback", reason: "full-output-unavailable" }),
+		);
+	});
+
+	it("recovers the artifact id from the inline notice a fused then_run result carries", async () => {
+		const root = await storeRoot();
+		const fullBody = `ERROR fused artifact output\n${"full diagnostic\n".repeat(400)}`;
+		const artifactPath = join(root, "bash-output-3.txt");
+		await writeFile(artifactPath, fullBody, { mode: 0o600 });
+
+		let input = "";
+		const { context, pi, manager } = load(
+			root,
+			modelComplete(fullBody, (value) => {
+				input = value;
+				return {
+					schema: REDUCER_RECEIPT_SCHEMA,
+					source_sha256: sourceHash(value),
+					status: "failure",
+					uncertain: false,
+					evidence: [{ kind: "failure", quote: "ERROR fused artifact output" }],
+				};
+			}),
+		);
+		(manager as unknown as Record<string, unknown>).getArtifactPath = async (id: string) =>
+			id === "3" ? artifactPath : null;
+
+		await pi.emit(
+			"tool_result",
+			fusedEvent("ERROR fused preview\nRead artifact://3 for full output", true),
+			context,
+		);
+
+		expect(input).toContain(fullBody);
+	});
+
+	it("ignores an artifact url in ordinary output that is not omp's truncation notice", async () => {
+		const root = await storeRoot();
+		const body = `ERROR build log\nSee artifact://build-42 for the produced binary\n${"diagnostic\n".repeat(400)}`;
+		let input = "";
+		const { context, manager, pi } = load(
+			root,
+			modelComplete(body, (value) => {
+				input = value;
+				return {
+					schema: REDUCER_RECEIPT_SCHEMA,
+					source_sha256: sourceHash(value),
+					status: "failure",
+					uncertain: false,
+					evidence: [{ kind: "failure", quote: "ERROR build log" }],
+				};
+			}),
+		);
+		// An omp-shaped session manager answers unknown ids with null; only a real
+		// truncation notice may route through it.
+		(manager as unknown as Record<string, unknown>).getArtifactPath = async () => null;
+
+		await pi.emit("tool_result", bashEvent(body), context);
+
+		expect(input).toContain(body);
+		expect(manager.customEntryData()).not.toContainEqual(
+			expect.objectContaining({ kind: "fallback", reason: "full-output-unavailable" }),
+		);
+	});
+
+	it("resolves the provider base URL through the registry when omp's auth answer omits it", async () => {
+		const root = await storeRoot();
+		const config = loadReducerConfig(join(root, "session-runtime"));
+		const body = `ERROR omp registry\n${"diagnostic\n".repeat(400)}`;
+		const archive = await archiveBody(config.storeRoot, body);
+		let call: CapturedCall | undefined;
+		const completion = modelComplete(
+			body,
+			(value) => ({
+				schema: REDUCER_RECEIPT_SCHEMA,
+				source_sha256: sourceHash(value),
+				status: "failure",
+				uncertain: false,
+				evidence: [{ kind: "failure", quote: "ERROR omp registry" }],
+			}),
+			"stop",
+			(value) => {
+				call = value;
+			},
+		) as CompatComplete;
+		// omp's registry has no `complete` and its getApiKeyAndHeaders answer carries
+		// no baseUrl; the provider's configured base URL lives on the registry.
+		const context = fakeContext(new FakeSessionManager([], "omp-session", root), {
+			model: ACTIVE_MODEL,
+			modelRegistry: {
+				find: (provider: string, modelId: string) =>
+					provider === REDUCER_MODEL.provider && modelId === REDUCER_MODEL.id
+						? { ...REDUCER_MODEL, baseUrl: "https://stale.example.invalid/v1" }
+						: undefined,
+				getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "omp-test-key" }),
+				getProviderBaseUrl: (provider: string) =>
+					provider === REDUCER_MODEL.provider ? "https://resolved.example.invalid/v1" : undefined,
+			} as unknown as ExtensionContext["modelRegistry"],
+		});
+
+		const result = await callReducer(config, "pytest -q", true, archive, body, context, completion);
+
+		expect(result.ok).toBe(true);
+		expect(call?.model.baseUrl).toBe("https://resolved.example.invalid/v1");
+	});
+
 	it("does not delegate small or non-diagnostic output", async () => {
 		const root = await storeRoot();
 		let calls = 0;
