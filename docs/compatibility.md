@@ -139,6 +139,12 @@ inspects the values the host passes instead of assuming Pi's shape:
   `obs_recall` declares `read` and `update_plan` declares `write`, so tightening
   `tools.approvalMode` does not prompt for a read-only recall. Pi's
   `ToolDefinition` has no `approval` field and ignores the declaration.
+- The approval decision itself resolves inside the host's approval layer and is
+  not observable from an extension: SoL-Pi declares the tier but never learns
+  whether a `then_run` command was approved, edited, or denied, and omp writes
+  no approval record to the session log. Auditing approvals therefore needs
+  host-level records; from the extension side the only signal is whether the
+  fused call executed.
 - omp truncates an oversized bash result inline and stores the full bytes as a
   session artifact instead of Pi's `details.fullOutputPath`. A truncated result
   names the artifact in `details.meta.truncation.artifactId` and in the
@@ -225,6 +231,22 @@ imports, the registry and session-manager capabilities the adaptation layer
 branches on (`getApiKeyAndHeaders`, `getProviderBaseUrl`, `getArtifactPath`),
 and the `.omp` configuration directories. The 18.2.7 → 18.3.x changelogs do not
 touch any API surface SoL-Pi uses.
+
+The `.github/workflows/omp-compat.yml` workflow runs that script against a
+version matrix — 18.2.6 (the recorded verification baseline above), 18.3.0,
+18.3.1 (the version exercised in live session testing), and npm's `latest`
+tag — on every push and once a week, so a new omp release that breaks the shim
+surface fails CI without a manual check. To probe a version locally:
+
+```bash
+npm install --no-save --prefix /tmp/omp-check "@oh-my-pi/pi-coding-agent@<version>"
+OMP_CODING_AGENT_DIR=/tmp/omp-check/node_modules/@oh-my-pi/pi-coding-agent \
+  bun scripts/check-omp-compat.mjs
+```
+
+The script needs Bun (or another runtime with TypeScript stripping that covers
+`node_modules`): the shim modules it imports ship as TypeScript inside the omp
+package, and Node refuses to strip types there.
 
 ## Test doubles
 
