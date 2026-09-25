@@ -151,6 +151,8 @@ npm ci --ignore-scripts
 npm run check
 npm audit --audit-level=high
 node scripts/check-pi-compat.mjs
+# when targeting Oh My Pi, also verify the installed compatibility layer:
+bun scripts/check-omp-compat.mjs
 ```
 
 `npm run check` covers TypeScript, the complete test suite, and package inspection. The development dependency set is pinned to Pi 0.85.1; runtime Pi packages remain peer dependencies so Pi owns their installation and upgrades.

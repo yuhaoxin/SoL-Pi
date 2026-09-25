@@ -76,6 +76,49 @@ pi list --approve
 
 The `pi list` output must show the exact SoL-Pi source in the selected scope. Do not install the same checkout in both scopes. A project-local registration must run only in a trusted project; use `--approve` for automated invocations unless trust has already been explicitly persisted.
 
+## Oh My Pi (omp) installation
+
+The `omp-compat` branch of a SoL-Pi checkout also runs on Oh My Pi, which loads
+Pi extensions through its own compatibility layer. Phases 1 and 3 apply
+unchanged; the host-specific steps differ as follows.
+
+Install the branch through omp's plugin manager instead of `pi install`:
+
+```bash
+omp plugin install "github:NVlabs/SoL-Pi#omp-compat"
+```
+
+For a checkout at `sol_pi_root`, register the local path instead:
+
+```bash
+omp plugin install "/absolute/path/to/SoL-Pi"
+```
+
+The effective `sol-pi.json` locations resolve through the same public
+`CONFIG_DIR_NAME` and `getAgentDir()` APIs, which omp answers with its own
+directories: project-local `<target_project>/.omp/sol-pi.json`, user-wide
+`~/.omp/agent/sol-pi.json`. omp loads project-local inputs without a trust
+prompt, so the project file is always read when present; do not place a
+`sol-pi.json` in a project you do not intend to affect.
+
+Verify the omp installation:
+
+1. Run `bun scripts/check-omp-compat.mjs` from `sol_pi_root` to confirm the
+   installed omp still exposes every shim export and host capability SoL-Pi
+   uses.
+2. Run `check-sol-pi-config.mjs --require-all-enabled` against the effective
+3. Start an omp session and confirm there is no extension load error and that
+   `edit`, `write`, `obs_recall`, and `update_plan` are the registered tools.
+4. In one session, run a fused `write` with a `then_run` command and confirm
+   both the mutation and the command execute in a single tool call; with a
+   non-default `tools.approvalMode`, confirm the call is gated at the exec tier.
+5. Produce a tool result larger than the ObservationPack threshold, let it be
+   replaced by a placeholder, and page it back with `obs_recall` using the
+   returned `next_offset`.
+6. In an RPC-mode session, complete a plan step through `update_plan` and
+   confirm the boundary compaction runs after the turn ends and the task
+   continues on the compacted context.
+
 ## Phase 3: configure all four mechanisms
 
 SoL-Pi defaults every mechanism to disabled. For this managed installation, create exactly one effective configuration with every mechanism enabled:

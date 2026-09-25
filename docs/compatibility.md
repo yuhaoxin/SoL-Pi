@@ -1,6 +1,6 @@
 # Pi Compatibility
 
-SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.85.1 and remains compatible with the originally supported 0.84.2 release. The current 22 test files (186 tests), type checking, package inspection, public API checks, and offline extension startup passed on both releases. Previous checks covered the public API surface of Pi 0.81.1, the base used by the original Pi fork; they are not a current full-suite compatibility guarantee. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
+SoL-Pi is developed and tested against `@earendil-works/pi-coding-agent` 0.85.1 and remains compatible with the originally supported 0.84.2 release. The current 23 test files (219 tests), type checking, package inspection, public API checks, and offline extension startup passed on both releases. Previous checks covered the public API surface of Pi 0.81.1, the base used by the original Pi fork; they are not a current full-suite compatibility guarantee. The runtime range is deliberately expressed as a peer dependency because Pi owns installation and upgrade of its packages; it is not a guarantee for every Pi version.
 
 SoL-Pi imports only public package exports:
 
@@ -68,8 +68,8 @@ events, print output, or RPC UI requests.
 
 Oh My Pi loads Pi extensions through a compatibility layer that rewrites the
 `@earendil-works/*` package specifiers and the bare `typebox` import onto its own
-copies. Four host surfaces still differ, so `src/sol-pi/host-compat.ts` inspects
-the values the host passes instead of assuming Pi's shape:
+copies. A number of host surfaces still differ, so `src/sol-pi/host-compat.ts`
+inspects the values the host passes instead of assuming Pi's shape:
 
 - `ExtensionContext.compact()` is callback-only and returns `void` on Pi. omp
   returns a promise that settles after the summary is committed, reads the
@@ -129,6 +129,47 @@ the values the host passes instead of assuming Pi's shape:
   archiving rather than failing the request it is handling. `obs_recall` reports
   that nothing was stored.
 
+- omp enforces a per-tool approval tier (`read`/`write`/`exec`) and defaults an
+  undeclared tool to `exec`. The fused `edit`/`write` declare a function-valued
+  approval: a call carrying `then_run` resolves to `exec`, because it runs a
+  shell command, and any other call defers to the built-in's own declaration.
+  `obs_recall` declares `read` and `update_plan` declares `write`, so tightening
+  `tools.approvalMode` does not prompt for a read-only recall. Pi's
+  `ToolDefinition` has no `approval` field and ignores the declaration.
+- omp truncates an oversized bash result inline and stores the full bytes as a
+  session artifact, naming only `details.meta.truncation.artifactId` (and an
+  `artifact://` notice in the text) instead of Pi's `details.fullOutputPath`.
+  Evidence-Preserving Reducer resolves the id through
+  `SessionManager.getArtifactPath()` and checks evidence against the full
+  output, as on Pi. When the artifact cannot be read it skips the result and
+  journals `full-output-unavailable` rather than reducing the truncated preview.
+- omp's `ExtensionContext` has no `signal` member. The reducer's model call is
+  bounded by its own timeout there, and Online Context Compact's `turn_end`
+  guard relies on the message stop reason; neither reads a host abort signal
+  that does not exist.
+- omp never emits `agent_settled`: the event is absent from its event list, and
+  registering it is accepted but never fires. The settle trigger is therefore
+  unreachable on omp, which is why boundary compaction keys off managed timers
+  instead. Host detection probes two members omp adds to the context — managed
+  timers and the read-only `models` query — so a future Pi that adopts one of
+  them is not misclassified.
+- omp's `input` event has no `streamingBehavior`, so a steer cannot be named
+  directly. Online Context Compact treats user input that arrives while the run
+  is active (`isIdle()` is false) as the steer; extension-originated messages,
+  including its own post-compaction continuation, never count. omp cannot tell
+  a queued follow-up from a steer, so a follow-up sent mid-run is also recorded
+  as a correction — the safe direction for plan invalidation.
+- omp's `ModelRegistry` has no `complete()` method; the reducer always
+  authenticates through `getApiKeyAndHeaders()` and calls the shared
+  `@earendil-works/pi-ai/compat` completion API on omp. That is the supported
+  path, not a fallback: omp's auth answer carries no `baseUrl`, so the reducer
+  takes the provider's configured base URL from `getProviderBaseUrl()`.
+- `renderShell: "self"` has no omp counterpart; omp draws its own tool-row frame
+  regardless, so the SoL-Pi title line composes with it. The fused
+  `edit`/`write` rows are drawn by SoL-Pi's own argument-derived preview on omp,
+  because omp ships no built-in renderers and stops applying its name-keyed
+  renderer table once an extension takes the name.
+
 Online Context Compact's trigger follows what the host can do with an interrupted
 run:
 
@@ -170,6 +211,13 @@ Verified against Oh My Pi 18.2.7, on the fused `edit`:
   and its command running in one call;
 - `write xd://resolve` finalizing a staged `ast_edit` preview inside a fused
   session, with the edit applied to the file.
+
+Against Oh My Pi 18.3.x, `bun scripts/check-omp-compat.mjs` verifies the shim
+surface directly in the installed omp package: every runtime export SoL-Pi
+imports, the registry and session-manager capabilities the adaptation layer
+branches on (`getApiKeyAndHeaders`, `getProviderBaseUrl`, `getArtifactPath`),
+and the `.omp` configuration directories. The 18.2.7 → 18.3.x changelogs do not
+touch any API surface SoL-Pi uses.
 
 ## Test doubles
 
