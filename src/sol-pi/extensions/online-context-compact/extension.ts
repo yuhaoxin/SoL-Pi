@@ -17,6 +17,8 @@ import {
 	boundaryTrigger,
 	compactSession,
 	deferOutsideHandler,
+	hostAbortSignal,
+	inputRedirectsTask,
 	systemPromptText,
 	type BoundaryTrigger,
 } from "../../host-compat.ts";
@@ -251,7 +253,9 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		});
 
 		pi.on("input", (event, context) => {
-			if (event.streamingBehavior !== "steer" && !event.text.startsWith("CORRECTION:")) {
+			// A redirection invalidates the in-flight plan: mid-run user input (a
+			// steer) or an explicit CORRECTION prefix, per the host's own marking.
+			if (!inputRedirectsTask(event, context)) {
 				return { action: "continue" as const };
 			}
 			ensureRestored(context);
@@ -371,7 +375,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				event.message.role !== "assistant" ||
 				event.message.stopReason === "error" ||
 				event.message.stopReason === "aborted" ||
-				context.signal?.aborted ||
+				hostAbortSignal(context)?.aborted ||
 				!toolResult ||
 				toolResult.isError
 			) {

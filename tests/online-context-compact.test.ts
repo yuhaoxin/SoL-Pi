@@ -289,6 +289,50 @@ describe("Online Context Compact extension", () => {
 			options: { triggerTurn: true },
 		});
 	});
+
+	it("records a mid-run user input as a correction on omp, which has no streamingBehavior", async () => {
+		const pi = new FakePi();
+		registerOnlineContextCompact(pi.asExtensionApi());
+		const context = fakeContext(pi.sessionManager, { isIdle: () => false });
+		await pi.emit("session_start", { type: "session_start" }, context);
+
+		await pi.emit("input", { type: "input", text: "wait, do this first", source: "interactive" }, context);
+
+		expect(restoreOnlineState(pi.sessionManager.getEntries()).epoch).toBe(1);
+	});
+
+	it("leaves an idle omp prompt alone", async () => {
+		const pi = new FakePi();
+		registerOnlineContextCompact(pi.asExtensionApi());
+		const context = fakeContext(pi.sessionManager, { isIdle: () => true });
+		await pi.emit("session_start", { type: "session_start" }, context);
+
+		await pi.emit("input", { type: "input", text: "new task", source: "interactive" }, context);
+
+		expect(restoreOnlineState(pi.sessionManager.getEntries()).epoch).toBe(0);
+	});
+
+	it("does not treat SoL-Pi's own continuation message as a correction", async () => {
+		const pi = new FakePi();
+		registerOnlineContextCompact(pi.asExtensionApi());
+		const context = fakeContext(pi.sessionManager, { isIdle: () => false });
+		await pi.emit("session_start", { type: "session_start" }, context);
+
+		await pi.emit(
+			"input",
+			{ type: "input", text: POST_COMPACTION_PLAN_REMINDER, source: "extension" },
+			context,
+		);
+
+		expect(restoreOnlineState(pi.sessionManager.getEntries()).epoch).toBe(0);
+	});
+
+	it("declares update_plan a write-tier tool for hosts that enforce approvals", () => {
+		const pi = new FakePi();
+		registerOnlineContextCompact(pi.asExtensionApi());
+
+		expect((pi.tool("update_plan") as { approval?: unknown }).approval).toBe("write");
+	});
 });
 
 describe("Online Context Compact on a host that cannot outlive the run", () => {

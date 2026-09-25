@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: MIT
  */
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { resolveCallRender, resolveResultRender } from "../../host-compat.ts";
+import { resolveCallRender, resolveResultRender, withApproval } from "../../host-compat.ts";
 import { decorateWithSolPi, renderThemedLine } from "../../tui.ts";
 import { PLAN_STATUSES, type PlanStep } from "./plan.ts";
 
@@ -67,7 +67,15 @@ export function registerOnlineTools(
 	options: OnlineToolsOptions = {},
 ): void {
 	const promptMetadata = options.toolPromptMetadata ?? true;
-	pi.registerTool({
+	const updatePlanParameters = Type.Object(
+		{
+			steps: Type.Array(planStepSchema, { minItems: 1, maxItems: 128 }),
+			progress: Type.Optional(progressSchema),
+		},
+		{ additionalProperties: false },
+	);
+	// Writes only session plan state; omp would otherwise default the tool to exec tier.
+	const updatePlanTool: ToolDefinition<typeof updatePlanParameters> = {
 		name: "update_plan",
 		label: "Update plan",
 		description: promptMetadata
@@ -76,13 +84,7 @@ export function registerOnlineTools(
 		promptSnippet: "Keep the working plan current",
 		promptGuidelines: UPDATE_PLAN_GUIDANCE,
 		renderShell: "self",
-		parameters: Type.Object(
-			{
-				steps: Type.Array(planStepSchema, { minItems: 1, maxItems: 128 }),
-				progress: Type.Optional(progressSchema),
-			},
-			{ additionalProperties: false },
-		),
+		parameters: updatePlanParameters,
 		executionMode: "sequential",
 		execute: async (toolCallId, params, signal, _onUpdate, context) =>
 			await handlers.updatePlan({
@@ -117,5 +119,6 @@ export function registerOnlineTools(
 				),
 			);
 		},
-	});
+	};
+	pi.registerTool(withApproval(updatePlanTool, "write"));
 }
