@@ -32,6 +32,7 @@ import {
 	type ExtensionContext,
 	type ExtensionFactory,
 	type Theme,
+	type ToolDefinition,
 	type WriteToolOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
@@ -49,10 +50,12 @@ import {
 	invokeBaseRenderer,
 	resolveCallRender,
 	resolveResultRender,
+	withApproval,
 	withOptionalProperty,
 	type ToolRenderView,
 } from "../../host-compat.ts";
-import { renderSolPiTool, renderThemedLine, showSolPiSavings } from "../../tui.ts";
+import { renderSolPiTool, showSolPiSavings } from "../../tui.ts";
+import { previewMutationCall } from "./mutation-preview.ts";
 import {
 	createThenRunSchema,
 	executeMutationThenRun,
@@ -81,9 +84,9 @@ const FUSED_SAVING = "1 model round-trip avoided";
  *
  * Deferring to the host's own built-in renderer keeps the row identical to an
  * unfused edit or write, with the SoL-Pi badge added only when the call carries
- * `then_run`. Pi ships renderers for `edit`/`write`; omp ships none, so this
- * falls back to a title line when the base is missing rather than calling into a
- * renderer that does not exist.
+ * `then_run`. Pi ships renderers for `edit`/`write`; omp ships none, and its
+ * name-keyed renderer table stops applying once an extension takes the name, so
+ * there the fused definition draws the argument-derived preview itself.
  */
 function renderFusedMutation(
 	view: ToolRenderView,
@@ -91,10 +94,32 @@ function renderFusedMutation(
 	name: string,
 	args: Record<string, unknown>,
 ): Component {
-	const path = typeof args.path === "string" && args.path.length > 0 ? args.path : name;
-	const body = base ?? renderThemedLine(view.theme, "dim", `${name} ${path}`);
+	const body = base ?? previewMutationCall(view.theme, name, args);
 	if (args.then_run === undefined || !view.theme) return body;
 	return renderSolPiTool(view.theme, "Action Fusion", FUSED_SAVING, body);
+}
+
+/**
+ * The approval tier a fused call resolves to on hosts that enforce one.
+ *
+ * omp defaults a tool without an `approval` declaration to the exec tier and
+ * resolves the declaration once per outer call, so a fused call that carries
+ * `then_run` must declare exec itself: the wrapped edit/write is a write-tier
+ * tool, and without this override the shell command would run under a write
+ * approval. A call without `then_run` defers to the built-in's own declaration;
+ * exec is the fallback because that is what an enforcing host applies to an
+ * undeclared tool. Pi has no approval field and ignores this at runtime.
+ */
+function fusedMutationApproval(baseApproval: unknown): (args: unknown) => unknown {
+	return (args: unknown) => {
+		const record = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined;
+		if (record?.then_run !== undefined) return "exec";
+		if (typeof baseApproval === "function") return (baseApproval as (input: unknown) => unknown)(args);
+		if (typeof baseApproval === "string" || (baseApproval !== null && typeof baseApproval === "object")) {
+			return baseApproval;
+		}
+		return "exec";
+	};
 }
 
 /**
@@ -173,8 +198,7 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 			"then_run",
 			createThenRunSchema(WRITE_THEN_RUN_DESCRIPTION),
 		);
-
-		pi.registerTool<typeof advertisedEdit.parameters, EditToolDetails | undefined>({
+		const fusedEdit: ToolDefinition<typeof advertisedEdit.parameters, EditToolDetails | undefined> = {
 			...editTemplate,
 			get parameters() {
 				return advertisedEdit.parameters;
@@ -228,9 +252,15 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				]);
 				return renderFusedMutation(view, base, "edit", view.args);
 			},
-		});
+		};
 
-		pi.registerTool<typeof writeParameters, undefined>({
+		// omp enforces an approval tier per tool; the fused definitions declare
+		// theirs because `then_run` runs a shell command inside a write-tier call.
+		pi.registerTool<typeof advertisedEdit.parameters, EditToolDetails | undefined>(
+			withApproval(fusedEdit, fusedMutationApproval((editTemplate as { approval?: unknown }).approval)),
+		);
+
+		const fusedWrite: ToolDefinition<typeof writeParameters, undefined> = {
 			...writeTemplate,
 			parameters: writeParameters,
 			description: publishedWrite?.description ?? writeTemplate.description,
@@ -280,7 +310,11 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 				]);
 				return renderFusedMutation(view, base, "write", view.args);
 			},
-		});
+		};
+
+		pi.registerTool<typeof writeParameters, undefined>(
+			withApproval(fusedWrite, fusedMutationApproval((writeTemplate as { approval?: unknown }).approval)),
+		);
 
 		// The variant is only readable once host action methods are callable, and the
 		// host serializes a tool's schema before `turn_start` runs. Both hooks that
