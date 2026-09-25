@@ -4,6 +4,7 @@
  */
 
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { warnIfArchiveOverLimit } from "./archive-growth.ts";
 import { loadSolPiConfig, type SolPiConfig } from "./config.ts";
 import { rendersToolPromptMetadata } from "./host-compat.ts";
 import { registerActionFusion } from "./extensions/action-fusion/index.ts";
@@ -48,6 +49,7 @@ export function createSolPiExtension(
 			registerConfiguredFeatures(pi, loadConfig(ctx), {
 				toolPromptMetadata: rendersToolPromptMetadata(ctx),
 			});
+			void warnIfArchiveOverLimit(ctx);
 		});
 	};
 }
