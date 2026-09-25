@@ -35,8 +35,10 @@ export {
 	analyzePlanTransition,
 	formatPlanSnapshot,
 	parsePlanSteps,
+	planTaskStatus,
 	type PlanStatus,
 	type PlanStep,
+	type PlanTaskStatus,
 } from "./plan.ts";
 export {
 	initialOnlineState,

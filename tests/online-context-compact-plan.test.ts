@@ -7,6 +7,7 @@ import {
 	analyzePlanTransition,
 	formatPlanSnapshot,
 	parsePlanSteps,
+	planTaskStatus,
 	type PlanStep,
 } from "../src/sol-pi/extensions/online-context-compact/index.ts";
 
@@ -40,9 +41,21 @@ describe("Online Context Compact plans", () => {
 		expect(transition.advice.join("\n")).toContain("at most one");
 	});
 
-	it("formats a compact progress-only snapshot", () => {
-		const snapshot = formatPlanSnapshot(OPEN);
-		expect(snapshot).toContain('<sol-pi-plan task_status="active">');
-		expect(snapshot).toContain(JSON.stringify({ steps: OPEN }));
+	it("derives the task status from the steps", () => {
+		expect(planTaskStatus([])).toBe("active");
+		expect(planTaskStatus(OPEN)).toBe("active");
+		expect(planTaskStatus(DONE)).toBe("completed");
+		expect(
+			planTaskStatus([
+				{ id: "a", goal: "done", status: "completed" },
+				{ id: "b", goal: "left", status: "pending" },
+			]),
+		).toBe("active");
+	});
+
+	it("formats a snapshot carrying the derived task status", () => {
+		expect(formatPlanSnapshot(OPEN)).toContain('<sol-pi-plan task_status="active">');
+		expect(formatPlanSnapshot(DONE)).toContain('<sol-pi-plan task_status="completed">');
+		expect(formatPlanSnapshot(OPEN)).toContain(JSON.stringify({ steps: OPEN }));
 	});
 });

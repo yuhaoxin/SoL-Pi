@@ -12,7 +12,7 @@ import {
 	type ExtensionFactory,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { formatSavingsCount, showSolPiSavings } from "../../tui.ts";
+import { formatSavingsCount, notifySolPiWarning, showSolPiSavings } from "../../tui.ts";
 import {
 	boundaryTrigger,
 	compactSession,
@@ -27,8 +27,9 @@ import {
 	decideCompaction,
 	type CompactionDecision,
 } from "./economics.ts";
+import { DecisionJournal } from "./decision-journal.ts";
 import { effectiveCacheWriteReadRatio, resolveCacheWriteReadRatioOption } from "./model-ratio.ts";
-import { analyzePlanTransition, formatPlanSnapshot, parsePlanSteps } from "./plan.ts";
+import { analyzePlanTransition, formatPlanSnapshot, parsePlanSteps, planTaskStatus } from "./plan.ts";
 import {
 	appendOnlineState,
 	initialOnlineState,
@@ -172,6 +173,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 		let compactionInFlight = false;
 		/** How this session can run a boundary compaction; see `boundaryTrigger`. */
 		let boundaryMode: BoundaryTrigger = "settle";
+		const journal = new DecisionJournal();
 
 		const releaseContinuation = (): void => {
 			const continuation = nextContinuation;
@@ -184,8 +186,19 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 
 		const restore = (context: ExtensionContext): void => {
 			releaseContinuation();
-			state = restoreOnlineState(context.sessionManager.getBranch());
+			const snapshot = restoreOnlineState(context.sessionManager.getBranch());
+			state = snapshot.state;
 			restored = true;
+			if (snapshot.corruptSnapshots > 0) {
+				notifySolPiWarning(
+					context,
+					`SoL-Pi Online Context Compact could not read ${snapshot.corruptSnapshots} state snapshot(s) `
+						+ "in the session log; "
+						+ (snapshot.recovered
+							? "it restored the latest readable snapshot instead."
+							: "no readable snapshot remained, so it started from a fresh state."),
+				);
+			}
 			boundaryMode = boundaryTrigger(context);
 			observedMessages = buildSessionContext(
 				context.sessionManager.getEntries(),
@@ -230,7 +243,7 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 						boundary: completedIds.length > 0,
 						completed_step_ids: completedIds,
 						progress_recorded: completedIds.length > 0 && input.progress !== undefined,
-						task_status: "active",
+						task_status: planTaskStatus(steps),
 						plan: steps,
 					},
 				);
@@ -355,6 +368,12 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 			} finally {
 				compactionInFlight = false;
 				activeDebt = undefined;
+				await journal.append(context, {
+					event: "outcome",
+					requestCount: state.requestCount,
+					committed: compacted,
+					...(compactionError ? { error: compactionError.message } : {}),
+				});
 			}
 		};
 
@@ -414,14 +433,28 @@ export function createOnlineContextCompactExtension(options: OnlineContextCompac
 				priced.compact && !nativeCompactionFeasible(context.sessionManager.getBranch(), keepRecentTokens)
 					? { ...priced, compact: false, reason: "native_not_compactable" }
 					: priced;
+			void journal.append(context, {
+				event: "decision",
+				boundaryMode,
+				requestCount: state.requestCount,
+				...decision,
+			});
 			if (!decision.compact) return;
 
+			if (boundaryMode === "unavailable") {
+				void journal.append(context, {
+					event: "outcome",
+					requestCount: state.requestCount,
+					committed: false,
+					skipped: "host_unavailable",
+				});
+				return;
+			}
 			if (boundaryMode === "deferred") {
 				selected = { decision };
 				deferOutsideHandler(context, () => runDeferredBoundaryCompaction(context));
 				return;
 			}
-			if (boundaryMode === "unavailable") return;
 			// A settle host cannot compact from inside this handler: compaction aborts
 			// the run and waits for it to unwind, and the run is waiting for this
 			// handler. Stop the run here, then compact once it settles.

@@ -130,14 +130,32 @@ function parseOnlineState(value: unknown): OnlineState | undefined {
 	};
 }
 
-export function restoreOnlineState(entries: readonly SessionEntry[]): OnlineState {
+export type RestoredOnlineState = {
+	readonly state: OnlineState;
+	/** Snapshots that failed to parse before the restored one; 0 on a clean start. */
+	readonly corruptSnapshots: number;
+	/** Whether a readable snapshot was found at all; false means a fresh or empty start. */
+	readonly recovered: boolean;
+};
+
+/**
+ * Restore the newest parseable snapshot, skipping malformed ones.
+ *
+ * A malformed snapshot means the newest state is unreadable: the mechanism
+ * falls back to an older snapshot or, when none parse, to a fresh state. The
+ * caller surfaces {@link RestoredOnlineState.corruptSnapshots} so that silent
+ * state loss is visible instead of looking like a fresh session.
+ */
+export function restoreOnlineState(entries: readonly SessionEntry[]): RestoredOnlineState {
+	let corruptSnapshots = 0;
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
 		if (entry?.type !== "custom" || entry.customType !== ONLINE_STATE_ENTRY) continue;
 		const state = parseOnlineState(entry.data);
-		if (state) return state;
+		if (state) return { state, corruptSnapshots, recovered: true };
+		corruptSnapshots++;
 	}
-	return initialOnlineState();
+	return { state: initialOnlineState(), corruptSnapshots, recovered: false };
 }
 
 export function appendOnlineState(pi: ExtensionAPI, state: OnlineState): void {

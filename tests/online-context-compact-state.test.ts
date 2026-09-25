@@ -48,14 +48,34 @@ describe("Online Context Compact state snapshots", () => {
 		});
 	});
 
-	it("restores the latest valid snapshot and ignores a malformed tail", () => {
+	it("restores the latest valid snapshot and reports a malformed tail", () => {
 		const manager = new FakeSessionManager();
 		const pi = new FakePi(manager);
 		const state = recordBoundary(recordProviderRequest(initialOnlineState(), 100), PLAN, PROGRESS);
 		appendOnlineState(pi.asExtensionApi(), state);
 		manager.appendCustomEntry(ONLINE_STATE_ENTRY, { version: 1, plan: "broken" });
 
-		expect(restoreOnlineState(manager.entries)).toEqual(state);
+		const restored = restoreOnlineState(manager.entries);
+		expect(restored.state).toEqual(state);
+		expect(restored.corruptSnapshots).toBe(1);
+		expect(restored.recovered).toBe(true);
+	});
+
+	it("starts clean and counts the damage when every snapshot is corrupt", () => {
+		const manager = new FakeSessionManager();
+		manager.appendCustomEntry(ONLINE_STATE_ENTRY, { version: 1, plan: "broken" });
+		manager.appendCustomEntry(ONLINE_STATE_ENTRY, "not an object");
+
+		const restored = restoreOnlineState(manager.entries);
+		expect(restored.state).toEqual(initialOnlineState());
+		expect(restored.corruptSnapshots).toBe(2);
+		expect(restored.recovered).toBe(false);
+	});
+
+	it("reports no corruption for a session without snapshots", () => {
+		const restored = restoreOnlineState([]);
+		expect(restored.state).toEqual(initialOnlineState());
+		expect(restored.corruptSnapshots).toBe(0);
 	});
 
 	it("counts requests, positive context growth, and cache-debt repayment", () => {

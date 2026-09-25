@@ -74,6 +74,13 @@ export function analyzePlanTransition(previous: readonly PlanStep[], next: reado
 	return { completedSteps, advice };
 }
 
+/** Task-level rollup of the per-step statuses: work left, or all done. */
+export type PlanTaskStatus = "active" | "completed";
+
+export function planTaskStatus(steps: readonly PlanStep[]): PlanTaskStatus {
+	return steps.length > 0 && steps.every((step) => step.status === "completed") ? "completed" : "active";
+}
+
 export function formatPlanSnapshot(steps: readonly PlanStep[]): string {
-	return `<sol-pi-plan task_status="active">${JSON.stringify({ steps })}</sol-pi-plan>`;
+	return `<sol-pi-plan task_status="${planTaskStatus(steps)}">${JSON.stringify({ steps })}</sol-pi-plan>`;
 }

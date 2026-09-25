@@ -74,6 +74,16 @@ export function renderThemedLine(
 	return new Text(theme ? theme.fg(color, text) : text, 0, 0);
 }
 
+/**
+ * Surface a warning the user must see: a UI notification when the session has
+ * a UI, stderr otherwise (print/JSON modes have no UI channel, matching the
+ * fail-open diagnostics convention).
+ */
+export function notifySolPiWarning(context: ExtensionContext, message: string): void {
+	if (context.hasUI) context.ui.notify(message, "warning");
+	else console.error(message);
+}
+
 export function showSolPiSavings(
 	context: ExtensionContext,
 	mechanism: SolPiTuiMechanism,

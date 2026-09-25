@@ -4,6 +4,9 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CompactOptions, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	BOUNDARY_COMPACTION_INSTRUCTIONS,
@@ -13,7 +16,7 @@ import {
 	registerOnlineContextCompact,
 	resolveKeepRecentTokens,
 } from "../src/sol-pi/extensions/online-context-compact/index.ts";
-import { restoreOnlineState } from "../src/sol-pi/extensions/online-context-compact/state.ts";
+import { ONLINE_STATE_ENTRY, restoreOnlineState } from "../src/sol-pi/extensions/online-context-compact/state.ts";
 import { FakePi, FakeSessionManager, fakeContext } from "./helpers.ts";
 
 const OPEN = [{ id: "build", goal: "build it", status: "in_progress" }] as const;
@@ -96,6 +99,41 @@ describe("Online Context Compact extension", () => {
 		await pi.emit("session_start", { type: "session_start" }, context);
 		const messages = [assistant("unchanged")];
 		expect(await pi.emitContext(messages, context)).toEqual(messages);
+	});
+
+	it("reports the derived task status in the update_plan result", async () => {
+		const pi = new FakePi();
+		registerOnlineContextCompact(pi.asExtensionApi());
+		const context = fakeContext(pi.sessionManager);
+		await pi.emit("session_start", { type: "session_start" }, context);
+
+		const open = await runPlan(pi, context, "call-open", { steps: [...OPEN] });
+		expect(open.details.task_status).toBe("active");
+		const done = await runPlan(pi, context, "call-done", { steps: [...DONE], progress: PROGRESS });
+		expect(done.details.task_status).toBe("completed");
+	});
+
+	it("warns on session start when a persisted state snapshot is corrupt", async () => {
+		const manager = new FakeSessionManager();
+		manager.appendCustomEntry(ONLINE_STATE_ENTRY, { version: 1, plan: "broken" });
+		const pi = new FakePi(manager);
+		registerOnlineContextCompact(pi.asExtensionApi());
+		const notifications: { message: string; level: string }[] = [];
+		const context = fakeContext(manager, {
+			hasUI: true,
+			ui: {
+				notify: (message: string, level: string) => {
+					notifications.push({ message, level });
+				},
+			},
+		} as unknown as Partial<ExtensionContext>);
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+
+		expect(notifications).toHaveLength(1);
+		expect(notifications[0]?.level).toBe("warning");
+		expect(notifications[0]?.message).toContain("could not read 1 state snapshot");
+		expect(restoreOnlineState(manager.entries).state.epoch).toBe(0);
 	});
 
 	it("stops at an eligible completed-step boundary, then compacts after settlement", async () => {
@@ -216,7 +254,7 @@ describe("Online Context Compact extension", () => {
 		await firstSettlement;
 		expect(firstSettlementFinished).toBe(true);
 		expect(await pi.emit("session_before_tree", { type: "session_before_tree" }, context)).toBeUndefined();
-		expect(restoreOnlineState(manager.entries)).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
+		expect(restoreOnlineState(manager.entries).state).toMatchObject({ nativeCompactionCount: 1, pendingProgress: [] });
 	});
 
 	it("compacts from the deferred timer on a host with managed timers", async () => {
@@ -298,7 +336,7 @@ describe("Online Context Compact extension", () => {
 
 		await pi.emit("input", { type: "input", text: "wait, do this first", source: "interactive" }, context);
 
-		expect(restoreOnlineState(pi.sessionManager.getEntries()).epoch).toBe(1);
+		expect(restoreOnlineState(pi.sessionManager.getEntries()).state.epoch).toBe(1);
 	});
 
 	it("leaves an idle omp prompt alone", async () => {
@@ -309,7 +347,7 @@ describe("Online Context Compact extension", () => {
 
 		await pi.emit("input", { type: "input", text: "new task", source: "interactive" }, context);
 
-		expect(restoreOnlineState(pi.sessionManager.getEntries()).epoch).toBe(0);
+		expect(restoreOnlineState(pi.sessionManager.getEntries()).state.epoch).toBe(0);
 	});
 
 	it("does not treat SoL-Pi's own continuation message as a correction", async () => {
@@ -324,7 +362,7 @@ describe("Online Context Compact extension", () => {
 			context,
 		);
 
-		expect(restoreOnlineState(pi.sessionManager.getEntries()).epoch).toBe(0);
+		expect(restoreOnlineState(pi.sessionManager.getEntries()).state.epoch).toBe(0);
 	});
 
 	it("declares update_plan a write-tier tool for hosts that enforce approvals", () => {
@@ -458,3 +496,155 @@ function buildSessionMessages(): AgentMessage[] {
 		assistant(`work ${"y".repeat(2_000)}`),
 	];
 }
+
+describe("Online Context Compact decision journal", () => {
+	const journalPathIn = (dir: string): string =>
+		join(dir, "sol-pi", "session-a", "online-context-compact", "decisions.jsonl");
+	const readJournal = async (dir: string): Promise<Record<string, unknown>[]> =>
+		(await readFile(journalPathIn(dir), "utf8"))
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+	it("journals every boundary decision with the economics behind it", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sol-pi-occ-journal-"));
+		const manager = new FakeSessionManager([], "session-a", dir);
+		const pi = new FakePi(manager);
+		createOnlineContextCompactExtension({ cacheWriteReadRatio: 12.5 })(pi.asExtensionApi());
+		const context = fakeContext(manager);
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emitContext(buildSessionMessages(), context);
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-open", { steps: [...OPEN] });
+		await runPlan(pi, context, "plan-done", { steps: [...DONE], progress: PROGRESS });
+		await pi.emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 1,
+				message: assistant("boundary"),
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "plan-done",
+						toolName: "update_plan",
+						content: [{ type: "text", text: "done" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			},
+			context,
+		);
+
+		await vi.waitFor(async () => {
+			expect(await readJournal(dir)).toHaveLength(1);
+		});
+		const [decision] = await readJournal(dir);
+		expect(decision).toMatchObject({
+			event: "decision",
+			compact: false,
+			reason: "non_positive_saving",
+			cacheWriteReadRatio: 12.5,
+			requestCount: 1,
+			boundaryMode: "settle",
+		});
+		expect(typeof decision?.timestamp).toBe("string");
+		expect(decision?.writeTokens).toBeGreaterThan(0);
+	});
+
+	it("journals the outcome once a selected compaction commits", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sol-pi-occ-journal-"));
+		const manager = new FakeSessionManager([], "session-a", dir);
+		manager.appendMessage({ role: "user", content: `old ${"x".repeat(2_000)}`, timestamp: Date.now() });
+		manager.appendMessage(assistant(`work ${"y".repeat(2_000)}`));
+		const pi = new FakePi(manager);
+		createOnlineContextCompactExtension({ cacheWriteReadRatio: 12.5, keepRecentTokens: 1 })(pi.asExtensionApi());
+		const compactCalls: CompactOptions[] = [];
+		let idle = true;
+		const sendMessage = pi.sendMessage.bind(pi);
+		vi.spyOn(pi, "sendMessage").mockImplementation((message, options) => {
+			idle = false;
+			sendMessage(message, options);
+		});
+		let context: ExtensionContext;
+		const compact = (options: CompactOptions = {}): void => {
+			compactCalls.push(options);
+			void pi
+				.emit(
+					"session_compact",
+					{
+						type: "session_compact",
+						fromExtension: false,
+						reason: "manual",
+						willRetry: false,
+						compactionEntry: {
+							type: "compaction",
+							id: "compact-1",
+							parentId: manager.getLeafId(),
+							timestamp: new Date().toISOString(),
+							summary: "summary",
+							firstKeptEntryId: manager.entries.at(-1)?.id ?? "message-1",
+							tokensBefore: 195_000,
+						},
+					},
+					context,
+				)
+				.then(() =>
+					options.onComplete?.({
+						summary: "summary",
+						firstKeptEntryId: manager.entries.at(-1)?.id ?? "message-1",
+						tokensBefore: 195_000,
+					}),
+				);
+		};
+		context = fakeContext(manager, {
+			compact,
+			isIdle: () => idle,
+			getSystemPrompt: () => "test prompt",
+			getContextUsage: () => ({ tokens: 195_000, contextWindow: 200_000, percent: 97.5 }),
+		});
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await pi.emitContext(buildSessionMessages(), context);
+		await pi.emit("before_provider_request", { type: "before_provider_request", payload: {} }, context);
+		await runPlan(pi, context, "plan-open", { steps: [...OPEN] });
+		await runPlan(pi, context, "plan-done", { steps: [...DONE], progress: PROGRESS });
+		await pi.emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 1,
+				message: assistant("boundary"),
+				toolResults: [
+					{
+						role: "toolResult",
+						toolCallId: "plan-done",
+						toolName: "update_plan",
+						content: [{ type: "text", text: "done" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				],
+			},
+			context,
+		);
+
+		const settlement = pi.emit("agent_settled", { type: "agent_settled" }, context);
+		await vi.waitFor(async () => {
+			expect((await readJournal(dir)).map((record) => record.event)).toEqual(["decision", "outcome"]);
+		});
+		await pi.emit("session_shutdown", { type: "session_shutdown" }, context);
+		await settlement;
+
+		const [decision, outcome] = await readJournal(dir);
+		expect(decision).toMatchObject({
+			event: "decision",
+			compact: true,
+			reason: "window_protection",
+			cacheWriteReadRatio: 12.5,
+		});
+		expect(outcome).toMatchObject({ event: "outcome", committed: true });
+	});
+});
