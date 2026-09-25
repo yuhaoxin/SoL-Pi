@@ -6,7 +6,7 @@
  * Host differences between upstream Pi and Oh My Pi (omp).
  *
  * omp runs Pi extensions through a compatibility layer and exposes the same
- * entry points, but four surfaces differ in ways that change behavior silently
+ * entry points, but several surfaces differ in ways that change behavior silently
  * when they are assumed:
  *
  * - `ExtensionContext.compact` is callback-only and returns `void` on Pi. omp
@@ -21,6 +21,10 @@
  *   `renderResult(result, options, theme, context)`; omp calls
  *   `renderCall(args, options, theme)` and
  *   `renderResult(result, options, theme, args)`.
+ * - Pi carries the current abort signal on `ExtensionContext.signal` and marks
+ *   mid-run user input with `InputEvent.streamingBehavior`; omp's context has
+ *   no `signal` and its input event no `streamingBehavior`, and it enforces a
+ *   per-tool `approval` tier that Pi's `ToolDefinition` does not declare.
  * - omp adds managed timers (`setTimeout`/`setInterval`/`clearTimer`) to
  *   `ExtensionContext`; Pi 0.85.1 has none. They are the only host-provided way
  *   to run work after a handler returns while keeping the session alive when
@@ -208,6 +212,9 @@ export async function compactSession(context: ExtensionContext, options: HostCom
 		resolveSettled();
 	};
 	const failure = (error: unknown): void => {
+		// omp reports a failed compaction twice: it calls `onError` and then
+		// rejects the returned promise. The first report wins on both hosts.
+		if (finished) return;
 		options.onError(error instanceof Error ? error : new Error(String(error)));
 		finish();
 	};
@@ -258,19 +265,89 @@ export function systemPromptText(context: ExtensionContext): string {
 }
 
 /**
+ * Whether the host is omp rather than upstream Pi.
+ *
+ * Two independent member probes, both readable at session start without calling
+ * a host action: omp adds managed timers (`setTimeout`) and a read-only model
+ * query surface (`models`) to its context; Pi 0.85.1 has neither. A future Pi
+ * that adopts one of the two still answers correctly.
+ */
+export function isOmpHost(context: ExtensionContext): boolean {
+	const probe = context as unknown as { setTimeout?: unknown; models?: unknown };
+	return typeof probe.setTimeout === "function" && typeof probe.models === "object" && probe.models !== null;
+}
+
+/**
  * Whether the host renders a tool's `promptSnippet` and `promptGuidelines` into
  * the system prompt.
  *
  * Pi 0.85.1 normalizes both into its prompt builder, so a tool's usage guidance
  * reaches the model there. omp declares `promptGuidelines` but never reads it and
- * has no `promptSnippet` field at all, so on such a host the same guidance has to
- * travel in the tool description instead. Managed timers are the observable host
- * marker this port already keys its other differences off.
+ * has no `promptSnippet` field at all, so on omp the same guidance has to travel
+ * in the tool description instead.
  */
 export function rendersToolPromptMetadata(context: ExtensionContext): boolean {
-	return !usesManagedTimers(context);
+	return !isOmpHost(context);
 }
 
+/**
+ * The abort signal the host exposes for the current operation, when it exposes
+ * one.
+ *
+ * Pi carries the signal on `ExtensionContext.signal` (undefined while no run is
+ * streaming). omp's `ExtensionContext` has no `signal` member at all, so callers
+ * must treat `undefined` as "not cancellable through the host" and keep their
+ * own timeout or stop-reason checks as the fallback.
+ */
+export function hostAbortSignal(context: ExtensionContext): AbortSignal | undefined {
+	return (context as unknown as { signal?: AbortSignal }).signal;
+}
+
+/**
+ * Attach an omp-style `approval` declaration to a tool definition.
+ *
+ * omp resolves an approval tier (`"read"`/`"write"`/`"exec"`, or a function of
+ * the call arguments) for every tool it runs and defaults an undeclared tool to
+ * `"exec"`. Pi's `ToolDefinition` has no such field and its runtime ignores
+ * unknown fields, so the declaration is inert there. The definition is mutated
+ * rather than copied: fused tools rely on live `parameters`/`description`
+ * getters that an object spread would freeze.
+ */
+export function withApproval<T extends object>(
+	definition: T,
+	approval: "read" | "write" | "exec" | ((args: unknown) => unknown),
+): T {
+	(definition as Record<string, unknown>).approval = approval;
+	return definition;
+}
+
+/** The fields of an `input` event that redirection detection reads. */
+export interface HostInputEvent {
+	readonly text?: unknown;
+	readonly streamingBehavior?: unknown;
+	readonly source?: unknown;
+}
+
+/**
+ * Whether an `input` event redirects the task the run is currently executing.
+ *
+ * Pi marks user input that arrives mid-run with `streamingBehavior: "steer"`,
+ * and a `CORRECTION:` prefix marks an explicit redirection on either host. omp's
+ * input event has no `streamingBehavior`; there, user-typed input that arrives
+ * while the run is active is the steer, so liveness (`isIdle()`) is the signal.
+ * Extension-originated messages (omp's `source: "extension"`), including this
+ * package's own post-compaction continuation, never count. omp cannot tell a
+ * queued follow-up apart from a steer, so a follow-up sent mid-run is also
+ * treated as a redirection — the safer direction, since a redirection stalemate
+ * clears plan state while a missed one compacts context the user just
+ * invalidated.
+ */
+export function inputRedirectsTask(event: HostInputEvent, context: ExtensionContext): boolean {
+	if (typeof event.text === "string" && event.text.startsWith("CORRECTION:")) return true;
+	if (typeof event.streamingBehavior === "string") return event.streamingBehavior === "steer";
+	if (event.source === "extension") return false;
+	return !context.isIdle();
+}
 export type BoundaryTrigger = "deferred" | "settle" | "unavailable";
 
 /**

@@ -9,11 +9,15 @@ import {
 	boundaryTrigger,
 	compactSession,
 	deferOutsideHandler,
+	hostAbortSignal,
+	inputRedirectsTask,
 	invokeBaseRenderer,
+	rendersToolPromptMetadata,
 	resolveCallRender,
 	resolveResultRender,
 	systemPromptText,
 	usesManagedTimers,
+	withApproval,
 	withOptionalProperty,
 } from "../src/sol-pi/host-compat.ts";
 import { fakeContext, plainTheme } from "./helpers.ts";
@@ -188,6 +192,117 @@ describe("host compaction", () => {
 
 		expect(onError).toHaveBeenCalledOnce();
 		expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+	});
+
+	it("reports a failure only once when the host both calls onError and rejects", async () => {
+		const onError = vi.fn();
+		const context = contextWith(async (options) => {
+			(options as { onError?: (error: Error) => void }).onError?.(new Error("compaction exploded"));
+			throw new Error("compaction exploded");
+		});
+
+		await compactSession(context, { instructions: "keep", onComplete: vi.fn(), onError });
+
+		expect(onError).toHaveBeenCalledOnce();
+	});
+});
+
+describe("host abort signal", () => {
+	it("returns the signal Pi exposes on its context", () => {
+		const controller = new AbortController();
+		const context = fakeContext("/sessions", { signal: controller.signal });
+
+		expect(hostAbortSignal(context)).toBe(controller.signal);
+	});
+
+	it("returns undefined on omp, whose context has no signal member", () => {
+		const context = fakeContext("/sessions");
+		delete (context as unknown as Record<string, unknown>).signal;
+
+		expect(hostAbortSignal(context)).toBeUndefined();
+	});
+});
+
+describe("host prompt metadata", () => {
+	const ompContext = (): ExtensionContext =>
+		fakeContext("/sessions", {
+			setTimeout: (() => 0) as never,
+			models: { resolve: () => undefined } as never,
+		} as Partial<ExtensionContext>);
+
+	it("renders tool prompt metadata on Pi", () => {
+		expect(rendersToolPromptMetadata(fakeContext("/sessions"))).toBe(true);
+	});
+
+	it("drops tool prompt metadata on omp", () => {
+		expect(rendersToolPromptMetadata(ompContext())).toBe(false);
+	});
+
+	it("keeps metadata on a host that adds managed timers but not omp's model query", () => {
+		const context = fakeContext("/sessions", { setTimeout: (() => 0) as never } as Partial<ExtensionContext>);
+
+		expect(rendersToolPromptMetadata(context)).toBe(true);
+	});
+});
+
+describe("tool approval declarations", () => {
+	it("attaches an approval the host type does not declare", () => {
+		const definition = { name: "obs_recall" };
+
+		const approved = withApproval(definition, "read");
+
+		expect(approved).toBe(definition);
+		expect((approved as { approval?: unknown }).approval).toBe("read");
+	});
+
+	it("keeps live getters working, which re-registration relies on", () => {
+		let schema: TSchema = Type.Object({ a: Type.String() });
+		const definition = {
+			get parameters() {
+				return schema;
+			},
+		};
+
+		withApproval(definition, () => "exec");
+		schema = Type.Object({ b: Type.String() });
+
+		expect(Object.keys(propertiesOf(definition.parameters))).toEqual(["b"]);
+	});
+});
+
+describe("input redirection", () => {
+	it("treats Pi steer input as a redirection", () => {
+		const context = fakeContext("/sessions", { isIdle: () => false });
+
+		expect(inputRedirectsTask({ text: "tweak this", streamingBehavior: "steer" }, context)).toBe(true);
+	});
+
+	it("treats a Pi follow-up without the correction prefix as ordinary input", () => {
+		const context = fakeContext("/sessions", { isIdle: () => false });
+
+		expect(inputRedirectsTask({ text: "also do this", streamingBehavior: "followUp" }, context)).toBe(false);
+	});
+
+	it("treats a correction-prefixed message as a redirection on any host", () => {
+		expect(inputRedirectsTask({ text: "CORRECTION: stop that" }, fakeContext("/sessions"))).toBe(true);
+	});
+
+	it("treats user input mid-run as a steer on omp, which has no streamingBehavior", () => {
+		const context = fakeContext("/sessions", { isIdle: () => false });
+
+		expect(inputRedirectsTask({ text: "wait, do this first", source: "interactive" }, context)).toBe(true);
+	});
+
+	it("leaves an idle omp prompt alone", () => {
+		const context = fakeContext("/sessions", { isIdle: () => true });
+
+		expect(inputRedirectsTask({ text: "new task", source: "interactive" }, context)).toBe(false);
+	});
+
+	it("ignores extension-originated messages, including SoL-Pi's own continuation", () => {
+		const context = fakeContext("/sessions", { isIdle: () => false });
+
+		expect(inputRedirectsTask({ text: "continue the task", source: "extension" }, context)).toBe(false);
 	});
 });
 
