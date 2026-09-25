@@ -6,21 +6,16 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname } from "node:path";
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import {
+	type FullOutputArtifacts,
+	fullOutputArtifactId,
+	readFullOutputArtifact,
+} from "../../full-output.ts";
 import { recordValue } from "./config.ts";
 
 /** Markers written by the action-fusion extension around a fused command's output. */
 const THEN_RUN_SUCCEEDED = "[then_run:succeeded]";
 const THEN_RUN_FAILED = "[then_run:failed]";
-
-/**
- * How a host exposes the full bytes of a truncated tool result. omp stores them
- * as a session artifact and names only the id in the inline text; its session
- * manager resolves the id to a path. Pi's session manager has no such method,
- * so the artifact branch below never engages there.
- */
-export interface FullOutputArtifacts {
-	readonly getArtifactPath?: (artifactId: string) => Promise<string | null>;
-}
 
 export interface ReducibleToolResult {
 	readonly command: string;
@@ -70,28 +65,6 @@ function truncationArtifactId(details: unknown): string | undefined {
 }
 
 /**
- * The artifact id in omp's inline truncation notice. Match the full notice
- * (`Read artifact://N for full output`) rather than any `artifact://` mention,
- * so command output that merely contains an artifact URL is not mistaken for a
- * truncated result.
- */
-function inlineArtifactId(inline: string): string | undefined {
-	return /Read artifact:\/\/([^\s)]+) for full output/u.exec(inline)?.[1];
-}
-
-async function readArtifactBody(artifacts: FullOutputArtifacts, id: string): Promise<string | undefined> {
-	try {
-		const path = await artifacts.getArtifactPath?.(id);
-		if (!path) return undefined;
-		const status = await lstat(path);
-		if (!status.isFile() || status.isSymbolicLink()) return undefined;
-		return await readFile(path, "utf8");
-	} catch {
-		return undefined;
-	}
-}
-
-/**
  * Recover the exact bytes the command produced rather than the preview the
  * result carries. Pi writes large bash output to a `pi-bash-*.log` temp file;
  * omp stores it as a session artifact and inlines only a truncation notice. An
@@ -116,11 +89,11 @@ async function exactBodyFromInline(
 	const metaId = truncationArtifactId(details);
 	const inlineId =
 		metaId === undefined && typeof artifacts?.getArtifactPath === "function"
-			? inlineArtifactId(inline)
+			? fullOutputArtifactId(inline)
 			: undefined;
 	const artifactId = metaId ?? inlineId;
 	if (artifactId === undefined || artifacts === undefined) return { body: inline, fullOutputMissing: false };
-	const body = await readArtifactBody(artifacts, artifactId);
+	const body = await readFullOutputArtifact(artifacts, artifactId);
 	return body === undefined ? { body: inline, fullOutputMissing: true } : { body, fullOutputMissing: false };
 }
 

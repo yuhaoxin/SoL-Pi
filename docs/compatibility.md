@@ -116,7 +116,10 @@ inspects the values the host passes instead of assuming Pi's shape:
   `renderCall(args, options, theme)` and `renderResult(result, options, theme,
   args)` on omp. omp's built-in definitions also carry no renderers at all, so a
   fused tool falls back to its own title line instead of calling into a renderer
-  that does not exist.
+  that does not exist. omp stacks a tool's call row above its result row unless
+  the tool declares `mergeCallAndResult`, so SoL-Pi's tools declare it and the
+  result row replaces the call row instead of repeating the badge; Pi's
+  renderer has no such flag and ignores it.
 - `ExtensionContext.getSystemPrompt()` returns one string on Pi and the prompt's
   lines on omp; token accounting joins the lines.
 - Pi renders a tool's `promptSnippet` and `promptGuidelines` into its system
@@ -137,12 +140,16 @@ inspects the values the host passes instead of assuming Pi's shape:
   `tools.approvalMode` does not prompt for a read-only recall. Pi's
   `ToolDefinition` has no `approval` field and ignores the declaration.
 - omp truncates an oversized bash result inline and stores the full bytes as a
-  session artifact, naming only `details.meta.truncation.artifactId` (and an
-  `artifact://` notice in the text) instead of Pi's `details.fullOutputPath`.
-  Evidence-Preserving Reducer resolves the id through
-  `SessionManager.getArtifactPath()` and checks evidence against the full
-  output, as on Pi. When the artifact cannot be read it skips the result and
-  journals `full-output-unavailable` rather than reducing the truncated preview.
+  session artifact instead of Pi's `details.fullOutputPath`. A truncated result
+  names the artifact in `details.meta.truncation.artifactId` and in the
+  `Read artifact://N for full output` notice; a result the bash minimizer
+  rewrote into a lossy summary carries no metadata and names it only in the
+  trailing `[raw output: artifact://N]` footer. Evidence-Preserving Reducer
+  resolves either id through `SessionManager.getArtifactPath()` and checks
+  evidence against the full output, as on Pi. When the artifact cannot be read
+  it skips the result and journals `full-output-unavailable` rather than
+  reducing the truncated preview. Observation Pack archives the same resolved
+  original when such a result exceeds its packing threshold.
 - omp's `ExtensionContext` has no `signal` member. The reducer's model call is
   bounded by its own timeout there, and Online Context Compact's `turn_end`
   guard relies on the message stop reason; neither reads a host abort signal

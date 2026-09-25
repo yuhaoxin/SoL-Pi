@@ -5,7 +5,7 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { resolveCallRender, resolveResultRender, withApproval } from "../../host-compat.ts";
+import { resolveCallRender, resolveResultRender, withApproval, withCallResultMerge } from "../../host-compat.ts";
 import { decorateWithSolPi, renderThemedLine } from "../../tui.ts";
 import { PLAN_STATUSES, type PlanStep } from "./plan.ts";
 
@@ -120,5 +120,5 @@ export function registerOnlineTools(
 			);
 		},
 	};
-	pi.registerTool(withApproval(updatePlanTool, "write"));
+	pi.registerTool(withCallResultMerge(withApproval(updatePlanTool, "write")));
 }

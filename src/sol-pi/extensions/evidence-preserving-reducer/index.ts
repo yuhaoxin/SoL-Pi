@@ -25,10 +25,11 @@ import type {
 	ExtensionFactory,
 	ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
+import { type FullOutputArtifacts } from "../../full-output.ts";
 import { runtimeRootIfAvailable } from "../../runtime-paths.ts";
 import { formatSavingsBytes, showSolPiSavings } from "../../tui.ts";
 import { archiveBody, archiveRoot } from "./archive.ts";
-import { type FullOutputArtifacts, reducibleToolResult } from "./candidate.ts";
+import { reducibleToolResult } from "./candidate.ts";
 import {
 	DIAGNOSTIC_COMMAND,
 	isRecord,

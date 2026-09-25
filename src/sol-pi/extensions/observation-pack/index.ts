@@ -21,7 +21,13 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { resolveCallRender, resolveResultRender, withApproval } from "../../host-compat.ts";
+import { type FullOutputArtifacts } from "../../full-output.ts";
+import {
+	resolveCallRender,
+	resolveResultRender,
+	withApproval,
+	withCallResultMerge,
+} from "../../host-compat.ts";
 import { runtimeRootIfAvailable } from "../../runtime-paths.ts";
 import {
 	decorateWithSolPi,
@@ -38,6 +44,7 @@ import {
 	FULL_SENDS,
 	isObservationId,
 	isPureTextResult,
+	messageWithFullOutput,
 	observationPath,
 	placeholderFor,
 	type RecallChunk,
@@ -175,11 +182,14 @@ export function createObservationPackExtension(options: ObservationPackOptions =
 				return decorateWithSolPi(view.theme, "Observation Pack", RECALL_SAVING, base);
 			},
 		};
-		pi.registerTool(withApproval(recallTool, "read"));
+		pi.registerTool(withCallResultMerge(withApproval(recallTool, "read")));
 
 		pi.on("context", async (event, ctx: ExtensionContext) => {
 			const root = runtimeRootIfAvailable(ctx);
 			if (!root) return undefined;
+			// omp's session manager resolves truncation artifact ids; Pi's has no
+			// such method, so the cast is a no-op there.
+			const artifacts = ctx.sessionManager as unknown as FullOutputArtifacts;
 			const projected = [...event.messages];
 			// How many provider requests each message has already been part of,
 			// counted by the assistant messages that follow it.
@@ -197,7 +207,7 @@ export function createObservationPackExtension(options: ObservationPackOptions =
 				if (!message || !isPureTextResult(message)) continue;
 
 				try {
-					const observation = createObservation(message, root);
+					const observation = createObservation(await messageWithFullOutput(message, artifacts), root);
 					if (!observation) continue;
 					await ensureStored(observation);
 

@@ -616,6 +616,64 @@ describe("evidence-preserving reducer", () => {
 		expect(input).toContain(fullBody);
 	});
 
+	it("checks evidence against the omp artifact behind a minimized bash result", async () => {
+		const root = await storeRoot();
+		const fullBody = `ERROR full artifact output\n${"full diagnostic\n".repeat(400)}`;
+		const artifactPath = join(root, "20.bash-original.log");
+		await writeFile(artifactPath, fullBody, { mode: 0o600 });
+		let input = "";
+		const { context, manager, pi } = load(
+			root,
+			modelComplete(fullBody, (value) => {
+				input = value;
+				return {
+					schema: REDUCER_RECEIPT_SCHEMA,
+					source_sha256: sourceHash(value),
+					status: "failure",
+					uncertain: false,
+					evidence: [{ kind: "failure", quote: "ERROR full artifact output" }],
+				};
+			}),
+		);
+		// omp's minimizer rewrites large bash output into a lossy summary and moves
+		// the original into a session artifact the trailing footer names; this
+		// path carries no truncation metadata.
+		(manager as unknown as Record<string, unknown>).getArtifactPath = async (id: string) =>
+			id === "20" ? artifactPath : null;
+
+		await pi.emit(
+			"tool_result",
+			bashEvent(`ERROR minimized summary\n${"summary line\n".repeat(400)}[raw output: artifact://20]\n`),
+			context,
+		);
+
+		expect(input).toContain(fullBody);
+		const candidate = manager.customEntryData().find((entry) => entry.kind === "candidate");
+		expect(await readFile(String(candidate?.sourcePath), "utf8")).toBe(fullBody);
+	});
+
+	it("leaves a minimized bash result alone and journals when its artifact is unavailable", async () => {
+		const root = await storeRoot();
+		let calls = 0;
+		const { context, manager, pi } = load(root, async () => {
+			calls++;
+			throw new Error("unexpected model call");
+		});
+		(manager as unknown as Record<string, unknown>).getArtifactPath = async () => null;
+
+		const result = await pi.emit(
+			"tool_result",
+			bashEvent(`ERROR minimized summary\n${"summary line\n".repeat(400)}[raw output: artifact://21]\n`),
+			context,
+		);
+
+		expect(result).toBeUndefined();
+		expect(calls).toBe(0);
+		expect(manager.customEntryData()).toContainEqual(
+			expect.objectContaining({ kind: "fallback", reason: "full-output-unavailable" }),
+		);
+	});
+
 	it("ignores an artifact url in ordinary output that is not omp's truncation notice", async () => {
 		const root = await storeRoot();
 		const body = `ERROR build log\nSee artifact://build-42 for the produced binary\n${"diagnostic\n".repeat(400)}`;

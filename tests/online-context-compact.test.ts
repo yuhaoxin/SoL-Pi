@@ -333,6 +333,13 @@ describe("Online Context Compact extension", () => {
 
 		expect((pi.tool("update_plan") as { approval?: unknown }).approval).toBe("write");
 	});
+
+	it("asks the host to replace the plan call row with its result row", () => {
+		const pi = new FakePi();
+		registerOnlineContextCompact(pi.asExtensionApi());
+
+		expect((pi.tool("update_plan") as { mergeCallAndResult?: unknown }).mergeCallAndResult).toBe(true);
+	});
 });
 
 describe("Online Context Compact on a host that cannot outlive the run", () => {

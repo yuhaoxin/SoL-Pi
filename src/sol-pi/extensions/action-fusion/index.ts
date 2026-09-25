@@ -51,6 +51,7 @@ import {
 	resolveCallRender,
 	resolveResultRender,
 	withApproval,
+	withCallResultMerge,
 	withOptionalProperty,
 	type ToolRenderView,
 } from "../../host-compat.ts";
@@ -257,7 +258,9 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 		// omp enforces an approval tier per tool; the fused definitions declare
 		// theirs because `then_run` runs a shell command inside a write-tier call.
 		pi.registerTool<typeof advertisedEdit.parameters, EditToolDetails | undefined>(
-			withApproval(fusedEdit, fusedMutationApproval((editTemplate as { approval?: unknown }).approval)),
+			withCallResultMerge(
+				withApproval(fusedEdit, fusedMutationApproval((editTemplate as { approval?: unknown }).approval)),
+			),
 		);
 
 		const fusedWrite: ToolDefinition<typeof writeParameters, undefined> = {
@@ -313,7 +316,9 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 		};
 
 		pi.registerTool<typeof writeParameters, undefined>(
-			withApproval(fusedWrite, fusedMutationApproval((writeTemplate as { approval?: unknown }).approval)),
+			withCallResultMerge(
+				withApproval(fusedWrite, fusedMutationApproval((writeTemplate as { approval?: unknown }).approval)),
+			),
 		);
 
 		// The variant is only readable once host action methods are callable, and the

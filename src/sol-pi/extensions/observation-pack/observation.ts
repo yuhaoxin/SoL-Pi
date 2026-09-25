@@ -8,6 +8,11 @@ import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
+import {
+	type FullOutputArtifacts,
+	fullOutputArtifactId,
+	readFullOutputArtifact,
+} from "../../full-output.ts";
 
 /** Only tool results larger than this participate. */
 export const THRESHOLD_BYTES = 10 * 1024;
@@ -93,6 +98,26 @@ export function observationPath(runtimeRoot: string, id: string): string {
 
 export function isObservationId(id: string): boolean {
 	return OBSERVATION_ID_PATTERN.test(id);
+}
+
+/**
+ * The message whose body should be archived. When omp truncated or minimized
+ * the result inline, the archived body is the original bytes the artifact
+ * reference names, so the placeholder's byte and line counts describe the
+ * original rather than a truncated copy. An unresolvable artifact keeps the
+ * inline body: archiving never fails closed.
+ */
+export async function messageWithFullOutput(
+	message: ToolResultMessage,
+	artifacts: FullOutputArtifacts,
+): Promise<ToolResultMessage> {
+	const text = textFromResult(message);
+	if (Buffer.byteLength(text, "utf8") <= THRESHOLD_BYTES) return message;
+	const id = fullOutputArtifactId(text);
+	if (id === undefined) return message;
+	const body = await readFullOutputArtifact(artifacts, id);
+	if (body === undefined) return message;
+	return { ...message, content: [{ type: "text", text: body }] };
 }
 
 export function createObservation(message: ToolResultMessage, runtimeRoot: string): Observation | undefined {

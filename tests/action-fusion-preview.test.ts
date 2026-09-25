@@ -61,6 +61,16 @@ describe("fused tool approval tiers", () => {
 	});
 });
 
+describe("fused tool result merging", () => {
+	it("asks the host to replace each fused call row with its result row", () => {
+		const pi = new FakePi();
+		createActionFusionExtension()(pi.asExtensionApi() as ExtensionAPI);
+
+		expect((pi.tool("edit") as { mergeCallAndResult?: unknown }).mergeCallAndResult).toBe(true);
+		expect((pi.tool("write") as { mergeCallAndResult?: unknown }).mergeCallAndResult).toBe(true);
+	});
+});
+
 describe("fused call preview without a host renderer", () => {
 	it("draws the write preview from the call arguments", () => {
 		const write = registeredTool(new FakePi(), "write");

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -102,6 +102,46 @@ describe("observation pack", () => {
 		const pi = observationPackPi();
 
 		expect((pi.tool("obs_recall") as { approval?: unknown }).approval).toBe("read");
+	});
+
+	it("asks the host to replace the recall call row with its result row", () => {
+		const pi = observationPackPi();
+
+		expect((pi.tool("obs_recall") as { mergeCallAndResult?: unknown }).mergeCallAndResult).toBe(true);
+	});
+
+	it("archives the omp artifact body behind a minimized bash result", async () => {
+		const dir = await sessionRoot();
+		const fullBody = `full original output\n${"original line\n".repeat(900)}`;
+		const artifactPath = join(dir, "20.bash-original.log");
+		await writeFile(artifactPath, fullBody, { mode: 0o600 });
+		// omp's minimizer leaves a lossy summary plus a raw-output footer; the
+		// archived observation must be the original bytes, not the summary.
+		const inline = `minimized summary\n${repeatPastThreshold("summary line\n")}[raw output: artifact://20]\n`;
+		const pi = observationPackPi();
+		const manager = new FakeSessionManager([], "session-a", dir);
+		(manager as unknown as Record<string, unknown>).getArtifactPath = async (id: string) =>
+			id === "20" ? artifactPath : null;
+
+		await pi.emitContext([toolResult(inline)], fakeContext(manager));
+
+		const objects = await readdir(observationObjectsDirectory(dir));
+		expect(objects).toHaveLength(1);
+		expect(await readFile(join(observationObjectsDirectory(dir), objects[0] as string), "utf8")).toBe(fullBody);
+	});
+
+	it("keeps the inline body when the omp artifact is unavailable", async () => {
+		const dir = await sessionRoot();
+		const inline = `minimized summary\n${repeatPastThreshold("summary line\n")}[raw output: artifact://21]\n`;
+		const pi = observationPackPi();
+		const manager = new FakeSessionManager([], "session-a", dir);
+		(manager as unknown as Record<string, unknown>).getArtifactPath = async () => null;
+
+		await pi.emitContext([toolResult(inline)], fakeContext(manager));
+
+		const objects = await readdir(observationObjectsDirectory(dir));
+		expect(objects).toHaveLength(1);
+		expect(await readFile(join(observationObjectsDirectory(dir), objects[0] as string), "utf8")).toBe(inline);
 	});
 
 	it("appends its usage guidance when the host drops the prompt snippet", () => {

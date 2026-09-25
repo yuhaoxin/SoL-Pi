@@ -321,6 +321,22 @@ export function withApproval<T extends object>(
 	return definition;
 }
 
+/**
+ * Ask omp to replace a tool's call row with its result row once the result
+ * exists.
+ *
+ * omp's tool execution component stacks `renderCall` above `renderResult`
+ * unless the tool carries `mergeCallAndResult`, so a SoL-Pi tool without the
+ * flag shows its badge twice per call. Pi's renderer has no such flag and
+ * ignores unknown fields, so the declaration is inert there. Mutation matches
+ * `withApproval`: fused tools rely on live getters an object spread would
+ * freeze.
+ */
+export function withCallResultMerge<T extends object>(definition: T): T {
+	(definition as Record<string, unknown>).mergeCallAndResult = true;
+	return definition;
+}
+
 /** The fields of an `input` event that redirection detection reads. */
 export interface HostInputEvent {
 	readonly text?: unknown;
