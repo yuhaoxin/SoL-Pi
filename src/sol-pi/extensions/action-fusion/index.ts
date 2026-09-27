@@ -35,7 +35,7 @@ import {
 	type ToolDefinition,
 	type WriteToolOptions,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { Container, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import {
 	type ActiveModelLike,
@@ -56,7 +56,7 @@ import {
 	type ToolRenderView,
 } from "../../host-compat.ts";
 import { renderSolPiTool, showSolPiSavings } from "../../tui.ts";
-import { previewMutationCall } from "./mutation-preview.ts";
+import { previewMutationCall, previewMutationResult, type MutationResultLike } from "./mutation-preview.ts";
 import {
 	createThenRunSchema,
 	executeMutationThenRun,
@@ -87,17 +87,37 @@ const FUSED_SAVING = "1 model round-trip avoided";
  * unfused edit or write, with the SoL-Pi badge added only when the call carries
  * `then_run`. Pi ships renderers for `edit`/`write`; omp ships none, and its
  * name-keyed renderer table stops applying once an extension takes the name, so
- * there the fused definition draws the argument-derived preview itself.
+ * there the fused definition draws the argument-derived preview itself and
+ * stacks the outcome row under it.
  */
 function renderFusedMutation(
 	view: ToolRenderView,
 	base: Component | undefined,
 	name: string,
 	args: Record<string, unknown>,
+	result?: MutationResultLike,
 ): Component {
 	const body = base ?? previewMutationCall(view.theme, name, args);
-	if (args.then_run === undefined || !view.theme) return body;
-	return renderSolPiTool(view.theme, "Action Fusion", FUSED_SAVING, body);
+	// A host that publishes its own renderer draws the diff and the error text in
+	// that renderer; the outcome row belongs to the hosts that draw no result.
+	const row =
+		base === undefined && result !== undefined ? composeMutationOutcome(body, view.theme, result) : body;
+	if (args.then_run === undefined || !view.theme) return row;
+	return renderSolPiTool(view.theme, "Action Fusion", FUSED_SAVING, row);
+}
+
+/** Stack the outcome row under the call preview, leaving the host's card frame untouched. */
+function composeMutationOutcome(
+	body: Component,
+	theme: Theme | undefined,
+	result: MutationResultLike,
+): Component {
+	const outcome = previewMutationResult(theme, result);
+	if (!outcome) return body;
+	const container = new Container();
+	container.addChild(body);
+	container.addChild(outcome);
+	return container;
 }
 
 /**
@@ -251,7 +271,7 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 					themeArg,
 					contextArg,
 				]);
-				return renderFusedMutation(view, base, "edit", view.args);
+				return renderFusedMutation(view, base, "edit", view.args, result);
 			},
 		};
 
@@ -311,7 +331,7 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 					themeArg,
 					contextArg,
 				]);
-				return renderFusedMutation(view, base, "write", view.args);
+				return renderFusedMutation(view, base, "write", view.args, result);
 			},
 		};
 

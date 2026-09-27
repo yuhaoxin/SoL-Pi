@@ -10,7 +10,11 @@
  * a built-in clears its provenance flag, and the row falls back to a generic
  * argument dump. The host exposes neither its renderer nor a way to keep the
  * flag, so the fused definition draws the argument-derived preview itself and
- * leaves the card frame, the theme, and the result row to the host.
+ * leaves the card frame and the theme to the host.
+ *
+ * The outcome row ({@link previewMutationResult}) is part of that preview: the
+ * host draws no built-in result for a replaced name, so a rejected call would
+ * otherwise be indistinguishable from a successful one.
  *
  * Pi attaches a renderer to its built-in definitions, so this module is unused
  * there.
@@ -27,10 +31,18 @@ const EDIT_LINES = 4;
 const EDIT_PREVIEW = 2;
 /** Longest preview line kept before its middle is elided. */
 const MAX_LINE_WIDTH = 120;
+/** Result lines shown before the outcome row counts the rest. */
+const RESULT_PREVIEW_LINES = 12;
 
 interface PreviewLine {
 	readonly color: ThemeColor;
 	readonly text: string;
+}
+
+/** Fields the outcome row reads from a tool result. */
+export interface MutationResultLike {
+	readonly content?: ReadonlyArray<{ readonly type?: string; readonly text?: string }>;
+	readonly isError?: boolean;
 }
 
 /** Fields the preview reads from a call, in every parameter variant. */
@@ -55,6 +67,20 @@ function contentLines(text: string): string[] {
 	const lines = text.split("\n");
 	if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
 	return lines;
+}
+
+/** Text blocks of a tool result, in order; non-text parts carry no row text. */
+function resultText(result: MutationResultLike): string {
+	const parts: string[] = [];
+	for (const block of result.content ?? []) {
+		if (block.type === "text" && typeof block.text === "string") parts.push(block.text);
+	}
+	return parts.join("\n").trim();
+}
+
+/** Style one row with the host theme, or return it unchanged when no theme was supplied. */
+function styleLine(theme: Theme | undefined, color: ThemeColor, text: string): string {
+	return theme ? theme.fg(color, text) : text;
 }
 
 function numbered(lines: readonly string[], limit: number): string[] {
@@ -159,4 +185,34 @@ export function previewMutationCall(
 		index === 0 ? theme.fg("accent", theme.bold(line)) : theme.fg(colors[index] ?? "dim", line),
 	);
 	return new Text(styled.join("\n"), 0, 0);
+}
+
+/**
+ * Render the outcome row of a fused `edit`/`write` call from its result.
+ *
+ * Oh My Pi draws no built-in result for the fused definitions, so without this
+ * row a rejected call — the Seen-Line Guard's "never displayed" refusal, which a
+ * straight retry with the same `[path#tag]` header then clears — looks exactly
+ * like a successful one: both cards show the same argument preview. The first
+ * line carries the outcome mark and the rest is the host's own result text,
+ * capped at {@link RESULT_PREVIEW_LINES} lines so a follow-up command's output
+ * cannot swamp the row.
+ */
+export function previewMutationResult(
+	theme: Theme | undefined,
+	result: MutationResultLike,
+): Component | undefined {
+	const text = resultText(result);
+	if (!text) return undefined;
+	const error = result.isError === true;
+	const lines = contentLines(text);
+	const shown = lines.slice(0, RESULT_PREVIEW_LINES);
+	const rows = shown.map((line, index) => {
+		const color: ThemeColor = error ? "error" : index === 0 ? "success" : "dim";
+		const marked = index === 0 ? `${error ? "✗" : "✓"} ${line}` : line;
+		return styleLine(theme, color, marked);
+	});
+	const remaining = lines.length - shown.length;
+	if (remaining > 0) rows.push(styleLine(theme, "dim", `    … ${remaining} more lines`));
+	return new Text(rows.join("\n"), 0, 0);
 }

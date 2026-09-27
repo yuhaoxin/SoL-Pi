@@ -111,3 +111,85 @@ describe("fused call preview without a host renderer", () => {
 		expect(text).toContain("PUT 1.=1:");
 	});
 });
+
+describe("fused result row without a host renderer", () => {
+	const args = { path: "src/app.ts", old_string: "const a = 1;", new_string: "const a = 2;" };
+
+	function resultRow(result: { content: Array<{ type: string; text: string }>; isError?: boolean }): string {
+		const edit = registeredTool(new FakePi(), "edit");
+		return componentText(
+			edit.renderResult?.(
+				result as never,
+				{ expanded: false } as never,
+				plainTheme,
+				{ cwd: process.cwd(), args } as never,
+			) as never,
+		);
+	}
+
+	it("shows a rejection under the call preview", () => {
+		const text = resultRow({
+			isError: true,
+			content: [
+				{
+					type: "text",
+					text: [
+						"This edit anchors to lines 5-7 of src/app.ts that [src/app.ts#AB12] never displayed (it showed a partial range).",
+						"Actual file content at those lines:",
+						"  5: const a = 1;",
+						"Verify the content matches what you intend to touch, then re-issue the edit with the same [path#tag] header.",
+					].join("\n"),
+				},
+			],
+		});
+
+		expect(text).toContain("edit src/app.ts · 1 edit");
+		expect(text).toContain("- const a = 1;");
+		expect(text).toContain("✗ This edit anchors to lines 5-7 of src/app.ts");
+		expect(text).toContain("Verify the content matches what you intend to touch");
+	});
+
+	it("marks a successful result and counts the lines it hides", () => {
+		const echo = Array.from({ length: 20 }, (_, index) => `${index + 1}:line ${index + 1}`).join("\n");
+		const text = resultRow({ content: [{ type: "text", text: echo }] });
+
+		expect(text).toContain("✓ 1:line 1");
+		expect(text).toContain("12:line 12");
+		expect(text).not.toContain("13:line 13");
+		expect(text).toContain("… 8 more lines");
+	});
+
+	it("draws no outcome row for a result without text", () => {
+		const text = resultRow({ content: [] });
+
+		expect(text).toContain("edit src/app.ts · 1 edit");
+		expect(text).not.toContain("✓");
+		expect(text).not.toContain("✗");
+	});
+
+	it("keeps a hashline call's path-less header and still shows the outcome", () => {
+		// omp passes the call arguments as the fourth `renderResult` argument, and a
+		// hashline payload carries its path inside `input`, so the header falls back
+		// to the tool name.
+		const edit = registeredTool(new FakePi(), "edit");
+		const args = { i: "改注释", input: "[a.ts#1A2B]\nPUT 1.=1:\n+rewritten" };
+
+		const text = componentText(
+			edit.renderResult?.(
+				{
+					isError: true,
+					content: [
+						{ type: "text", text: "This edit anchors to lines 5 of a.ts that [a.ts#1A2B] never displayed." },
+					],
+				} as never,
+				{ expanded: false } as never,
+				plainTheme,
+				args as never,
+			) as never,
+		);
+
+		expect(text).toContain("edit edit");
+		expect(text).toContain("PUT 1.=1:");
+		expect(text).toContain("✗ This edit anchors to lines 5 of a.ts");
+	});
+});
