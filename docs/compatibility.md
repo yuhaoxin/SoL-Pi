@@ -97,7 +97,16 @@ inspects the values the host passes instead of assuming Pi's shape:
   `turn_start`, so those two hooks are the last ones that can land in the same
   turn. `sessionEditVariant()` reads the variant from the built-in `edit` schema
   while omp still publishes it and otherwise from the `read` tool's published
-  description, which omp renders from the same edit-mode resolution.
+  description, which omp renders from the same edit-mode resolution — and, since
+  omp reads that description through an accessor, from the mode of the request
+  being prepared, not from the mode of the session's first request. The
+  downgrade-by-model-name rule therefore only answers when a host publishes
+  neither: omp decides the downgrade from the model's catalog identity, so a
+  model whose id names a downgraded family but whose catalog entry carries no
+  family — `kimi-code/k3-256k` reports `class: "unknown"` — keeps `hashline`
+  there while the name rule answers `replace`, and a fused `edit` advertising
+  `replace` against a host patching hashline rejects every call with
+  `input must begin with "[PATH#HASH]" …; got: ""`.
 - `PI_EDIT_VARIANT` names the edit variant outright in omp's own resolution, and
   its edit factory reads the same variable when it constructs a definition.
   `editDefinitionForVariant()` sets it for that synchronous construction and

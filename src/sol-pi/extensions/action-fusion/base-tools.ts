@@ -117,10 +117,15 @@ export function requestedToolPath(params: object): string | undefined {
 
 /**
  * The model families whose editing support the host downgrades from the patch
- * language to single-file replacement. The downgrade itself stays the host's
- * decision; this only states which models it applies to, so the fused schema
- * can match the schema the host will accept. A pinned `PI_EDIT_VARIANT` or a
- * host that reports its own variant makes this rule unnecessary.
+ * language to single-file replacement. Used only when the host publishes no
+ * variant signal of its own (see {@link sessionEditVariant}).
+ *
+ * This mirrors a host rule this module cannot read, and the two have already
+ * diverged: omp downgrades by the model's catalog identity, so a model whose
+ * name carries a downgraded family but whose catalog entry carries no family —
+ * `kimi-code/k3-256k` reports `class: "unknown"` — keeps `hashline` there while
+ * this rule answers `replace`. The fused schema then advertises a shape the
+ * host's patcher rejects.
  */
 const DOWNGRADED_EDIT_MODEL_RE =
 	/(^|[/-])(kimi|mimo|minimax|deepseek|stepfun)([/-]|$)|codex-spark|glm[^/]*?flash[^/]*?5\.3|glm[^/]*?5\.3[^/]*?flash/iu;
@@ -142,11 +147,13 @@ function downgradedEditModel(model: ActiveModelLike | undefined): boolean {
  * Which edit parameter variant the session uses.
  *
  * `PI_EDIT_VARIANT`, when set, decides outright, because the host honors it
- * above its own resolution. Otherwise the built-in `edit` schema answers while
- * the host still publishes it, and after that the active model does, because the
- * host resolves the variant from the model. The `read` tool's description is the
- * last resort: the host renders it once when it builds its tools, so it reports
- * the variant that was active then, not the current one.
+ * above its own resolution. Otherwise the host's own signals answer, in the
+ * order they stay readable: the built-in `edit` schema while the host still
+ * publishes it, then the `read` tool's description, which the host renders from
+ * the same edit-mode resolution that drives `edit`. On omp that description is
+ * a live accessor, so it reports the mode of the request being prepared,
+ * including after a model switch. Only a host that publishes neither signal
+ * leaves the downgrade-by-model-name rule to guess.
  *
  * `undefined` means nothing could answer yet, and callers keep the variant they
  * already advertise.
@@ -162,13 +169,15 @@ export function sessionEditVariant(pi: ExtensionAPI, model?: ActiveModelLike): E
 		if (properties.includes("path")) return "replace";
 	}
 
+	const read = publishedTool(pi, "read");
+	if (read?.description !== undefined) {
+		return HASHLINE_ANCHOR_RE.test(read.description) ? "hashline" : "replace";
+	}
+
 	if (model !== undefined && (typeof model.provider === "string" || typeof model.id === "string")) {
 		return downgradedEditModel(model) ? "replace" : "hashline";
 	}
-
-	const read = publishedTool(pi, "read");
-	if (read?.description === undefined) return undefined;
-	return HASHLINE_ANCHOR_RE.test(read.description) ? "hashline" : "replace";
+	return undefined;
 }
 
 /** The `properties` names behind any published parameter schema shape. */

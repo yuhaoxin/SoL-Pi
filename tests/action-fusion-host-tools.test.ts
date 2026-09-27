@@ -142,9 +142,9 @@ function text(result: { content: Array<{ type: string; text?: string }> }): stri
 		.join("\n");
 }
 
-function propertiesOf(tool: ToolDefinition): string[] {
-	const parameters = tool.parameters as unknown as { properties?: Record<string, unknown> };
-	return Object.keys(parameters.properties ?? {});
+function propertiesOf(tool: { parameters?: unknown }): string[] {
+	const parameters = tool.parameters as { properties?: Record<string, unknown> } | undefined;
+	return Object.keys(parameters?.properties ?? {});
 }
 
 const tempDirs: string[] = [];
@@ -242,9 +242,33 @@ describe("Action Fusion host built-in inheritance", () => {
 		else process.env.PI_EDIT_VARIANT = previous;
 	});
 
-	it("resolves the variant from the active model once the host replaces its own edit", () => {
+	it("keeps the host's published signal when the model name suggests the other variant", () => {
+		const variantFor = (listing: ListingOptions, model: { provider: string; id: string }) =>
+			sessionEditVariant({ getAllTools: () => publishedTools(listing) } as unknown as ExtensionAPI, model);
+		const replaced: ListingOptions = { editSource: "extension" };
+		const k3 = { provider: "kimi-code", id: "k3-256k" };
+
+		// omp resolves the variant from the model's catalog identity, where `k3-256k` carries no
+		// family, so it keeps `hashline`; the read description reports that and must win over the
+		// model-name rule, which only mirrors the families omp downgrades by name.
+		expect(variantFor({ ...replaced, readDescription: HASHLINE_READ_DESCRIPTION }, k3)).toBe("hashline");
+		expect(variantFor({ ...replaced, readDescription: PLAIN_READ_DESCRIPTION }, k3)).toBe("replace");
+	});
+
+	it("advertises the host's shape for a model whose name contradicts it", () => {
+		const harness = loadTools({ listing: { editSource: "extension", readDescription: HASHLINE_READ_DESCRIPTION } });
+		const expected = editDefinitionForVariant(process.cwd(), "hashline");
+
+		harness.startSession();
+
+		expect(harness.edit.description).toBe(expected.description);
+		expect(propertiesOf(harness.edit)).toEqual([...propertiesOf(expected), "then_run"]);
+	});
+
+	it("resolves the variant from the active model when the host publishes no variant signal", () => {
+		const listing: ListingOptions = { editSource: "extension", readDescription: null };
 		const variantFor = (model: { provider: string; id: string }) =>
-			sessionEditVariant({ getAllTools: () => publishedTools({ editSource: "extension" }) } as unknown as ExtensionAPI, model);
+			sessionEditVariant({ getAllTools: () => publishedTools(listing) } as unknown as ExtensionAPI, model);
 
 		expect(variantFor({ provider: "kimi-code", id: "k3-256k" })).toBe("replace");
 		expect(variantFor({ provider: "deepseek", id: "deepseek-flash" })).toBe("replace");
